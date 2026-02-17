@@ -1,0 +1,27 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug ZeroDivert",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/src/ZeroDivert.Console/bin/Debug/net10.0-windows/ZeroDivert.Console.dll",
+            "args": ["-v"],
+            "cwd": "${workspaceFolder}/src/ZeroDivert.Console/bin/Debug/net10.0-windows",
+            "console": "integratedTerminal",
+            "stopAtEntry": false
+        },
+        {
+            "name": "Release ZeroDivert",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-release",
+            "program": "${workspaceFolder}/src/ZeroDivert.Console/bin/Release/net10.0-windows/ZeroDivert.Console.dll",
+            "args": ["-v"],
+            "cwd": "${workspaceFolder}/src/ZeroDivert.Console/bin/Release/net10.0-windows",
+            "console": "integratedTerminal",
+            "stopAtEntry": false
+        }
+    ]
+}

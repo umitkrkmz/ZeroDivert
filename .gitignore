@@ -1,0 +1,90 @@
+# ─── Build output ────────────────────────────────────────────────────────────
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# ─── Visual Studio ────────────────────────────────────────────────────────────
+.vs/
+*.user
+*.userosscache
+*.suo
+*.sln.docstates
+*.rsuser
+
+# ─── VS Code ──────────────────────────────────────────────────────────────────
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# ─── Rider / JetBrains ───────────────────────────────────────────────────────
+.idea/
+*.sln.iml
+
+# ─── NuGet ────────────────────────────────────────────────────────────────────
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+
+# ─── .NET / MSBuild ───────────────────────────────────────────────────────────
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# Test results / coverage
+[Tt]est[Rr]esult*/
+*.trx
+*.coverage
+*.coveragexml
+
+# ─── WinDivert binaries (bundled in Driver project — kept in repo) ────────────
+# WinDivert.dll and WinDivert64.sys are tracked via explicit exception below.
+# All other DLL/SYS/EXE outputs are excluded.
+*.exe
+*.pdb
+*.dll
+*.sys
+!src/ZeroDivert.Driver/WinDivert.dll
+!src/ZeroDivert.Driver/WinDivert64.sys
+
+# ─── User / runtime data ──────────────────────────────────────────────────────
+profile.json
+*.log
+logs/
+
+# ─── Sensitive / secrets ─────────────────────────────────────────────────────
+*.env
+*.env.local
+secrets.json
+
+# ─── Publish / release output (upload to GitHub Releases, not committed) ─────
+publish/
+release/
+
+# ─── Claude ──────────────────────────────────────────────────────────────────
+.claude/
+
+# ─── Windows reserved device names ───────────────────────────────────────────
+nul
+con
+prn
+aux
+
+# ─── Windows ─────────────────────────────────────────────────────────────────
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ─── Misc ─────────────────────────────────────────────────────────────────────
+*.DS_Store
+.DS_Store?
+._*
+*.orig
+*.rej
+*.bak
+*.tmp

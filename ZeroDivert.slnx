@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ZeroDivert.Console/ZeroDivert.Console.csproj" />
+    <Project Path="src/ZeroDivert.Core/ZeroDivert.Core.csproj" />
+    <Project Path="src/ZeroDivert.Driver/ZeroDivert.Driver.csproj" />
+  </Folder>
+</Solution>
