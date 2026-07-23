@@ -46,6 +46,7 @@ public readonly struct PacketContext
     public required ushort SrcPort { get; init; }
     public required ushort DstPort { get; init; }
     public required bool IsSyn { get; init; }
+    public required bool IsRst { get; init; }
     public required bool IsClientHello { get; init; }
     public required bool HasHttpHost { get; init; }
 }

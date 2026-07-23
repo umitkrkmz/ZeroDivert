@@ -1,7 +1,17 @@
 <Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+  </Configurations>
   <Folder Name="/src/">
-    <Project Path="src/ZeroDivert.Console/ZeroDivert.Console.csproj" />
-    <Project Path="src/ZeroDivert.Core/ZeroDivert.Core.csproj" />
-    <Project Path="src/ZeroDivert.Driver/ZeroDivert.Driver.csproj" />
+    <Project Path="src/ZeroDivert.Console/ZeroDivert.Console.csproj">
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+    <Project Path="src/ZeroDivert.Core/ZeroDivert.Core.csproj">
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+    <Project Path="src/ZeroDivert.Driver/ZeroDivert.Driver.csproj">
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
   </Folder>
 </Solution>

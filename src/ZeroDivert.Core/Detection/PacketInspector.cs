@@ -70,6 +70,7 @@ public static class PacketInspector
         var dstPort = BinaryPrimitives.ReadUInt16BigEndian(packet[(payloadStart + 2)..]);
 
         var isSyn = false;
+        var isRst = false;
         var isClientHello = false;
         var hasHttpHost = false;
 
@@ -78,6 +79,7 @@ public static class PacketInspector
             var tcpHeaderLen = ((packet[payloadStart + 12] >> 4) & 0x0F) * 4;
             var tcpFlags = packet[payloadStart + 13];
             isSyn = (tcpFlags & 0x02) != 0 && (tcpFlags & 0x10) == 0; // SYN without ACK
+            isRst = (tcpFlags & 0x04) != 0; // RST
 
             var dataStart = payloadStart + tcpHeaderLen;
             if (packet.Length > dataStart)
@@ -97,6 +99,7 @@ public static class PacketInspector
             SrcPort = srcPort,
             DstPort = dstPort,
             IsSyn = isSyn,
+            IsRst = isRst,
             IsClientHello = isClientHello,
             HasHttpHost = hasHttpHost
         };
@@ -211,6 +214,7 @@ public static class PacketInspector
         SrcPort = 0,
         DstPort = 0,
         IsSyn = false,
+        IsRst = false,
         IsClientHello = false,
         HasHttpHost = false
     };
