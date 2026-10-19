@@ -88,3 +88,6 @@ $RECYCLE.BIN/
 *.rej
 *.bak
 *.tmp
+
+# ─── Installer ────────────────────────────────────────────────────────────────
+installer/Output/

@@ -10,6 +10,11 @@ public sealed class AppState
     /// to stay stopped if the user had stopped it deliberately last time.
     /// </summary>
     public bool WasRunning { get; set; }
+
+    /// <summary>
+    /// Whether to look up the latest GitHub release on startup (see UpdateChecker).
+    /// </summary>
+    public bool CheckForUpdates { get; set; } = true;
 }
 
 /// <summary>
@@ -45,7 +50,18 @@ public static class AppStateStore
         return new AppState();
     }
 
-    public static void Save(AppState state)
+    /// <summary>
+    /// Loads the current state, applies <paramref name="change"/> and saves it, so
+    /// updating one setting never resets the others.
+    /// </summary>
+    public static void Update(Action<AppState> change)
+    {
+        var state = Load();
+        change(state);
+        Save(state);
+    }
+
+    private static void Save(AppState state)
     {
         try
         {

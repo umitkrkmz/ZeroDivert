@@ -6,7 +6,7 @@
 
 **Discord DPI bypass aracı — VPN olmadan, hız kaybı olmadan**
 
-[![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.en.html)
 [![.NET](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet)](https://dotnet.microsoft.com/)
 [![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows)](https://www.microsoft.com/windows)
 
@@ -39,45 +39,64 @@ ZeroDivert, İSS'lerin (İnternet Servis Sağlayıcıları) uyguladığı DPI (D
 
 ## 📥 İndir
 
-[Releases](../../releases) sayfasından `ZeroDivert-v1.1.0-win-x64.zip` dosyasını indir.
+[Releases](../../releases) sayfasından son sürümü indirin. İki seçenek var:
 
-ZIP içinde aşağıdaki dosyalar bulunur — **hepsi aynı klasörde olmalıdır:**
+| Dosya | Ne zaman? |
+|---|---|
+| `ZeroDivert-vX.Y.Z-setup.exe` | **Önerilen.** Program Files'a kurulur, Başlat menüsüne eklenir, Program Ekle/Kaldır'dan kaldırılabilir. Kaldırırken otomatik başlatma görevini de temizler. |
+| `ZeroDivert-vX.Y.Z-win-x64.zip` | **Taşınabilir.** Kurulum yapmadan, bir klasöre çıkartıp çalıştırmak için. Program dosyaları (`ZeroDivert.Console.exe`, `WinDivert.dll`, `WinDivert64.sys`) aynı klasörde durmalı; yanlarında lisans dosyaları da var. |
+
+**Gereksinimler**
+- Windows 10 veya 11, 64-bit
+- Yönetici yetkisi (uygulama açılırken ister)
+- **.NET kurulumu gerekmez**, runtime uygulamanın içinde gelir.
+- Windows 11'de **Akıllı Uygulama Denetimi** açıksa ZeroDivert çalışmaz. Kapatmanızı önermiyoruz; nedenini aşağıda okuyun.
+
+### Akıllı Uygulama Denetimi açıksa
+
+**Akıllı Uygulama Denetimi** (Smart App Control), Windows 11'in bir güvenlik özelliğidir. Bir uygulama açılmadan önce onun dijital olarak imzalı olup olmadığına ve Microsoft'un bulut tabanlı güvenilirlik verilerine bakar; imzasız ya da tanınmayan uygulamaları açılmadan engeller. Antivirüsün henüz tanımadığı yeni zararlı yazılımlara (ör. internetten inen sahte bir kurulum dosyası, fidye yazılımının ilk adımı) karşı ek bir koruma katmanıdır.
+
+ZeroDivert dijital olarak imzalı değildir, bu yüzden bu özellik **açık** olan bilgisayarlarda engellenir. Bu engel için "Yine de çalıştır" seçeneği ya da uygulama bazında istisna yoktur.
+
+- **Durumunu nereden görürüm?** Windows Güvenliği → Uygulama ve tarayıcı denetimi → Akıllı Uygulama Denetimi. "Kapalı" yazıyorsa ZeroDivert'i sorunsuz kullanabilirsiniz. "Değerlendirme" yazıyorsa şimdilik çalışır, ama Windows ileride özelliği kendiliğinden açarsa engellenmeye başlar. Özellik yalnızca temiz kurulmuş Windows 11'lerde bulunur; birçok bilgisayarda zaten kapalıdır.
+- **"Açık" yazıyorsa ne yapmalıyım?** Bu ayarı sadece ZeroDivert'i çalıştırmak için kapatmanızı **önermiyoruz**. Karar tamamen size aittir; kapatmadan önce şunları bilin:
+  - Kapattığınızda bu koruma katmanı **bütün uygulamalar için** devre dışı kalır, sadece ZeroDivert için değil. Windows Defender antivirüsü çalışmaya devam eder, ama imzasız ve henüz tanınmayan programlar artık bu ek kontrolden geçmeden açılabilir.
+  - Kapatılan özellik kendiliğinden tekrar açılmaz. Windows sürümünüze bağlı olarak tekrar açmak için **Windows'u sıfırlamanız ya da yeniden kurmanız gerekebilir**. Kapatmadan önce ayar ekranındaki açıklamayı mutlaka okuyun.
+  - Bilgisayar başkasınınsa ya da ailece kullanılıyorsa, bu ayarı sahibine sormadan değiştirmeyin.
+- ZeroDivert ücretsiz ve açık kaynaklı bir projedir; ücretli kod imzalama sertifikası kullanılması **planlanmamaktadır**. Uygulamanın ne yaptığından emin olmak isterseniz kaynak kodunu inceleyebilir ve [kaynak koddan](#-kaynak-koddan-derleme) kendiniz derleyebilirsiniz.
+
+**İlk açılışta SmartScreen uyarısı:** İmzasız uygulamalarda Windows ilk açılışta "Windows bilgisayarınızı korudu" diyebilir. **Ek bilgi → Yine de çalıştır** ile devam edebilirsiniz.
+
+**Dosyayı doğrulamak için:** her release'de dosyaların yanında `.sha256` dosyaları var. PowerShell'de `Get-FileHash <dosya> -Algorithm SHA256` çıktısını onunla karşılaştırabilirsiniz.
+
+<details>
+<summary>Önceki sürümler (v1.1.0, v1.0.0)</summary>
+
+**v1.1.0** — [.NET 10 Desktop Runtime (x64)](https://dotnet.microsoft.com/download/dotnet/10.0) kurulu olmalıdır; kurulu değilse uygulama hiçbir mesaj göstermeden açılıp kapanır. ZIP içindeki dosyaların hepsi aynı klasörde olmalıdır:
 
 ```
 ZeroDivert-v1.1.0-win-x64/
-    ├── ZeroDivert.Console.exe            ← Ana uygulama
+    ├── ZeroDivert.Console.exe
     ├── ZeroDivert.Console.dll
     ├── ZeroDivert.Console.deps.json
     ├── ZeroDivert.Console.runtimeconfig.json
     ├── ZeroDivert.Core.dll
     ├── ZeroDivert.Driver.dll
-    ├── Spectre.Console.dll               ← Konsol arayüzü
+    ├── Spectre.Console.dll
     ├── Spectre.Console.Ansi.dll
-    ├── WinDivert.dll                     ← Ağ kütüphanesi
-    └── WinDivert64.sys                   ← Kernel driver
+    ├── WinDivert.dll
+    └── WinDivert64.sys
 ```
 
-**SHA-256:**
 ```
-ZeroDivert-v1.1.0-win-x64.zip:
+ZeroDivert-v1.1.0-win-x64.zip  SHA-256:
 2C2422B1079A1E4418E359291013E9B0F060C8C4575CBE1E1B534392EBF8C14B
 ```
 
-<details>
-<summary>Önceki sürüm (v1.0.0)</summary>
-
-ZIP içinde 3 dosya bulunur:
+**v1.0.0** — ZIP içinde 3 dosya bulunur: `ZeroDivert.Console.exe`, `WinDivert.dll`, `WinDivert64.sys`.
 
 ```
-ZeroDivert-v1.0.0-win-x64/
-    ├── ZeroDivert.Console.exe   ← Ana uygulama
-    ├── WinDivert.dll            ← Ağ kütüphanesi
-    └── WinDivert64.sys          ← Kernel driver
-```
-
-**SHA-256:**
-```
-ZeroDivert-v1.0.0-win-x64.zip:
+ZeroDivert-v1.0.0-win-x64.zip  SHA-256:
 E2D5D528E5B00F120F3EC12FC174233142441CA4DCCFF3E0BD4AAE1B661312B4
 ```
 
@@ -87,7 +106,7 @@ E2D5D528E5B00F120F3EC12FC174233142441CA4DCCFF3E0BD4AAE1B661312B4
 
 ## 🚀 Kullanım
 
-`ZeroDivert.Console.exe` dosyasına sağ tıklayıp **Yönetici olarak çalıştır**.
+Kurulum dosyasıyla kurduysanız Başlat menüsünden **ZeroDivert**'i açın. Taşınabilir zip kullanıyorsanız `ZeroDivert.Console.exe`'yi çalıştırın. Her iki durumda da Windows yönetici izni ister; WinDivert sürücüsü bu izin olmadan çalışamaz.
 
 Argüman vermeden çalıştırıp bir terminalde açarsan **Ana Menü** açılır. Argüman geçersen (ör. bir script'ten) menü atlanır ve doğrudan o argümanlarla çalışır:
 
@@ -114,11 +133,20 @@ Argümansız çalıştırınca açılan **Ana Menü**'den:
 - **Başlat** — izlemeyi başlatır
 - **Ayarlar** — çalışma seçenekleri (`-v`/`--no-log`/`--no-status`), **DNS Ayarları** (ağ adaptörünüzün DNS'ini uygulama içinden Cloudflare/Google/özel bir sunucuya çevirin — bazı İSS'ler Discord'u DNS seviyesinde de engellediği için gerekebilir, bkz. SSS) ve **Başlangıçta Otomatik Başlat**
 - **Log ve Profil Bilgisi** — log/profil dosyalarının yeri ve kayıtlı profilin içeriği (salt okunur)
+- **Hakkında** — sürüm, lisans, GitHub bağlantısı ve güncelleme durumu
 - **Çıkış**
+
+### Güncelleme Kontrolü
+
+ZeroDivert açılırken GitHub'daki son sürüme bir kez bakar. Daha yeni bir sürüm varsa Ana Menü'de ve sistem tepsisinde haber verir; tıklayınca indirme sayfası açılır. İndirme ve kurulumu her zaman siz yaparsınız, uygulama kendini kendiliğinden güncellemez.
+
+Bu kontrol, GitHub API'sine (`api.github.com`) yapılan anonim tek bir istekten ibarettir; sizinle veya bilgisayarınızla ilgili hiçbir bilgi gönderilmez. İsterseniz **Ayarlar → Güncelleme kontrolü** ile kapatabilirsiniz. Bunun dışında ZeroDivert hiçbir sunucuya veri göndermez.
 
 ### Sistem Tepsisi ve Otomatik Başlatma
 
 ZeroDivert nasıl başlatılırsa başlatılsın (Ana Menü'den "Başlat" veya doğrudan bir komutla) **her zaman bir sistem tepsisi simgesi** gösterir. Konsol penceresini **X ile kapatmak uygulamayı kapatmaz** — pencere gizlenir, izleme arka planda çalışmaya devam eder ve masaüstünüz/görev çubuğunuz kalabalıklaşmaz. Simgeye sağ tıklayarak **Başlat / Durdur**, **Konsolu Göster/Gizle** ve **Çıkış** yapabilirsiniz. Uygulamayı gerçekten durdurup kapatmak için ya çalışırken **Ctrl+C** basın ya da tepsi menüsünden **Çıkış**'ı seçin.
+
+Aynı anda yalnızca bir ZeroDivert çalışabilir. Uygulama tepsideyken Başlat menüsünden tekrar açarsanız, ikinci bir kopya başlamaz; çalışan kopyanın penceresi öne gelir.
 
 `Ayarlar → Başlangıçta Otomatik Başlat → Kur` seçildiğinde, Windows'a giriş yaptığınızda ZeroDivert konsol penceresi açmadan doğrudan tepsi simgesiyle arka planda otomatik başlar (Görev Zamanlayıcı üzerinden, yükseltilmiş yetkiyle — her girişte UAC istemi çıkmaz) ve en son bıraktığınız durumu (çalışıyor/durduruldu) hatırlayıp aynı duruma döner.
 
@@ -193,20 +221,26 @@ Yönetici olarak çalıştır:
 .\src\ZeroDivert.Console\bin\Release\net10.0-windows\ZeroDivert.Console.exe
 ```
 
-Bu klasörü başka bir yere dağıtacaksanız (ör. ZIP olarak), aşağıdaki dosyaların **hepsi aynı klasörde** olmalı:
+Bu derleme, çalıştığı bilgisayarda .NET 10 Desktop Runtime'ın kurulu olmasını bekler. Başka bilgisayarlara dağıtmak için runtime'ı içine gömen **son kullanıcı paketini** kullanın:
 
+```bash
+dotnet publish src/ZeroDivert.Console -p:PublishProfile=win-x64
 ```
-ZeroDivert.Console.exe
-ZeroDivert.Console.dll
-ZeroDivert.Console.deps.json
-ZeroDivert.Console.runtimeconfig.json
-ZeroDivert.Core.dll
-ZeroDivert.Driver.dll
-Spectre.Console.dll
-Spectre.Console.Ansi.dll
-WinDivert.dll
-WinDivert64.sys
+
+Çıktı `src/ZeroDivert.Console/bin/publish/win-x64/` klasörüne düşer: `ZeroDivert.Console.exe` (runtime gömülü), `WinDivert.dll` ve `WinDivert64.sys` aynı klasörde olmalıdır. Yanlarında lisans dosyaları da bulunur: `LICENSE.txt`, `THIRD-PARTY-NOTICES.txt` ve `LICENSE-WinDivert.txt`. Visual Studio'da aynı işlem: `ZeroDivert.Console` → sağ tık → **Publish** → `win-x64`.
+
+**Kurulum dosyası (isteğe bağlı):** [Inno Setup 6](https://jrsoftware.org/isinfo.php) kuruluysa, yukarıdaki publish komutundan sonra:
+
+```powershell
+# Inno Setup "herkes için" kurulduysa:
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=1.2.0 installer\ZeroDivert.iss
+# Sadece kendi kullanıcınız için kurulduysa (ör. winget --scope user):
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" /DAppVersion=1.2.0 installer\ZeroDivert.iss
 ```
+
+Kurulum dosyası `installer\Output\` klasörüne düşer.
+
+**Yeni sürüm yayınlamak:** üç csproj'daki `<Version>`, `<AssemblyVersion>` ve `<FileVersion>` değerlerini güncelleyin (uygulama sürümünü banner'da ve Hakkında ekranında buradan okur), CHANGELOG'a sürüm başlığını ekleyin, sonra `v` ile başlayan bir tag pushlayın (`git tag v1.2.0 && git push origin v1.2.0`). [Release iş akışı](.github/workflows/release.yml) tag'in sürümle uyuştuğunu kontrol eder; kurulum dosyasını ve taşınabilir zip'i derler, SHA-256'larını hesaplar ve taslak (draft) bir GitHub Release oluşturur. Notları düzenleyip **Publish**'e basmak size kalır. `v1.2.0-rc.1` gibi ekli tag'ler pre-release olarak açılır.
 
 > `WinDivert.dll` ve `WinDivert64.sys` dosyaları `src/ZeroDivert.Driver/` içinde mevcuttur ve derleme sırasında çıktı klasörüne otomatik kopyalanır. Ayrıca indirmen gerekmez.
 
@@ -219,6 +253,11 @@ Ağ paketlerini düzenleyen açık kaynaklı bir yazılımdır. Kişisel kullan�
 
 **Antivirüs uyarı veriyor?**
 WinDivert bazı antivirüsler tarafından yanlışlıkla "riskli" olarak işaretlenebilir. Bu bir **false positive**'dir. WinDivert açık kaynaklıdır, kaynak kodu [GitHub'da](https://github.com/basil00/WinDivert) incelenebilir. Kaspersky'nin WinDivert'i engellediği bilinmektedir; Windows Defender'a geçmeniz önerilir.
+
+**"Akıllı Uygulama Denetimi, güvenli olmayabilecek bir uygulamayı engelledi" uyarısı çıkıyor?**
+Bu bir virüs tespiti değildir. Windows 11'deki **Akıllı Uygulama Denetimi** imzasız uygulamaları engeller ve ZeroDivert imzasız dağıtılır. Ne olduğunu, kapatmanın sonuçlarını ve neden önermediğimizi [İndir bölümünde](#akıllı-uygulama-denetimi-açıksa) anlattık.
+
+Bir not: Bu özellik ilk kurulumdan sonra bir süre **"Değerlendirme"** modunda çalışır ve hiçbir şeyi engellemez, sonra Windows onu kendiliğinden **"Açık"** ya da **"Kapalı"** konuma geçirir. Bu yüzden daha önce sorunsuz açılan bir sürüm bir gün aniden engellenmeye başlayabilir.
 
 **Çalışmıyor, ne yapmalıyım?**
 1. **Yönetici olarak çalıştırdığınızdan emin olun**
@@ -286,11 +325,15 @@ Pull request'ler memnuniyetle karşılanır. Detaylar için [CONTRIBUTING.md](CO
 
 ## 📄 Lisans
 
-Bu proje **GNU General Public License v2.0** ile lisanslanmıştır.
+Copyright (C) 2025-2026 Umit Korkmaz
 
-> ZeroDivert, [WinDivert](https://github.com/basil00/WinDivert) kullanmaktadır (LGPL v3 / GPL v2 dual-license). Lisans uyumluluğu için GPL v2 seçilmiştir.
+Bu proje **GNU General Public License v3.0 veya sonraki bir sürümü** (`GPL-3.0-or-later`) ile lisanslanmıştır: Free Software Foundation tarafından yayımlanan GPL'in 3. sürümü ya da (tercihinize bağlı olarak) daha sonraki herhangi bir sürümü kapsamında yeniden dağıtabilir ve/veya değiştirebilirsiniz. Bu program faydalı olması umuduyla dağıtılmaktadır, ancak **hiçbir garanti verilmez**; ayrıntılar için lisans metnine bakın.
 
-Tam lisans metni için [LICENSE](LICENSE) dosyasına bakın.
+> ZeroDivert, [WinDivert](https://github.com/basil00/WinDivert) kullanmaktadır. WinDivert, LGPL v3 / GPL v2 çift lisanslıdır; ZeroDivert onu **LGPL v3** koşulları altında kullanır (LGPL v3, GPL v3 ile uyumludur).
+
+> **Önceki sürümler:** v1.0.0 ve v1.1.0, **GPL v2** ile yayımlanmıştır ve o sürümlerin kopyaları GPL v2 altında kalmaya devam eder. GPL v3'e geçiş bir sonraki sürümden itibaren geçerlidir.
+
+Tam lisans metni için [LICENSE](LICENSE) dosyasına bakın. ZeroDivert'in birlikte dağıttığı üçüncü taraf bileşenler (WinDivert, Spectre.Console, .NET runtime) ve lisansları [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) dosyasında listelenmiştir. Bu dosyalar indirdiğiniz paketin içinde de bulunur.
 
 ---
 

@@ -27,8 +27,11 @@ internal static class TrayApp
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool SetConsoleCtrlHandler(ConsoleCtrlHandler handler, bool add);
 
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
     private const int SwHide = 0;
-    private const int SwShow = 5;
+    private const int SwRestore = 9; // shows a hidden window and un-minimizes it
     private const int CtrlCloseEvent = 2;
 
     private static NotifyIcon? _notifyIcon;
@@ -40,11 +43,19 @@ internal static class TrayApp
     private static SynchronizationContext? _uiContext;
     private static readonly ManualResetEventSlim ExitSignal = new(false);
     private static ConsoleCtrlHandler? _closeHandler; // rooted so the GC can't collect the delegate
+    private static string? _balloonUrl; // opened when the current balloon tip is clicked
 
     public static int Run(bool startHidden, (bool verbose, bool noLog, bool noStatus)? initialOptions)
     {
         StartTrayThread();
         InstallCloseHandler();
+
+        UpdateChecker.OnUpdateFound(update => _uiContext?.Post(_ =>
+        {
+            _balloonUrl = update.ReleaseUrl;
+            _notifyIcon?.ShowBalloonTip(
+                8000, "ZeroDivert", $"Yeni sürüm var: {update.LatestTag}. İndirme sayfası için tıklayın.", ToolTipIcon.Info);
+        }, null));
 
         System.Console.CancelKeyPress += (_, e) =>
         {
@@ -107,6 +118,10 @@ internal static class TrayApp
                 Visible = true
             };
             _notifyIcon.DoubleClick += (_, _) => ToggleConsole(!_consoleVisible);
+            _notifyIcon.BalloonTipClicked += (_, _) =>
+            {
+                if (_balloonUrl != null) AppInfo.OpenInBrowser(_balloonUrl);
+            };
 
             ready.Set();
             Application.Run();
@@ -178,7 +193,7 @@ internal static class TrayApp
         // fails immediately (e.g. WinDivert couldn't open), so the tray never gets
         // stuck claiming "Durdur" for a session that isn't actually running.
         SetTrayState(running: true);
-        AppStateStore.Save(new AppState { WasRunning = true });
+        AppStateStore.Update(s => s.WasRunning = true);
 
         // WinDivert.Recv is a blocking native call, so this needs a dedicated
         // thread rather than a pooled one.
@@ -195,12 +210,13 @@ internal static class TrayApp
             var message = t.Exception?.GetBaseException().Message ?? "Bilinmeyen hata";
             _uiContext?.Post(_ =>
             {
+                _balloonUrl = null;
                 _notifyIcon?.ShowBalloonTip(5000, "ZeroDivert", $"Başlatılamadı: {message}", ToolTipIcon.Error);
                 SetTrayState(running: false);
                 _runCts?.Dispose();
                 _runCts = null;
                 _runTask = null;
-                AppStateStore.Save(new AppState { WasRunning = false });
+                AppStateStore.Update(s => s.WasRunning = false);
             }, null);
         }, TaskScheduler.Default);
     }
@@ -228,7 +244,7 @@ internal static class TrayApp
 
         if (persistState)
         {
-            AppStateStore.Save(new AppState { WasRunning = false });
+            AppStateStore.Update(s => s.WasRunning = false);
         }
     }
 
@@ -250,13 +266,39 @@ internal static class TrayApp
         }
     }
 
+    /// <summary>
+    /// Shows the console window and brings it to the front. Safe to call from any
+    /// thread, including before the tray icon exists (e.g. while the home menu is
+    /// up and a second copy of the app is launched).
+    /// </summary>
+    public static void ShowConsole()
+    {
+        ToggleConsole(visible: true);
+        SetForegroundWindow(GetConsoleWindow());
+    }
+
     private static void ToggleConsole(bool visible)
     {
         _consoleVisible = visible;
-        ShowWindow(GetConsoleWindow(), visible ? SwShow : SwHide);
-        if (_consoleItem != null)
+        ShowWindow(GetConsoleWindow(), visible ? SwRestore : SwHide);
+
+        // Called from the console-close handler and the show-console listener as
+        // well as from the tray menu, so marshal the label change onto the tray thread.
+        void UpdateLabel()
         {
-            _consoleItem.Text = visible ? "Konsolu Gizle" : "Konsolu Göster";
+            if (_consoleItem != null)
+            {
+                _consoleItem.Text = visible ? "Konsolu Gizle" : "Konsolu Göster";
+            }
+        }
+
+        if (_uiContext != null)
+        {
+            _uiContext.Post(_ => UpdateLabel(), null);
+        }
+        else
+        {
+            UpdateLabel();
         }
     }
 
