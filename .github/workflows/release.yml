@@ -1,0 +1,100 @@
+# Builds the end-user package and creates a *draft* GitHub Release whenever a
+# version tag is pushed, e.g.:
+#
+#   git tag v1.2.0 && git push origin v1.2.0
+#
+# The draft gets the zip + a .sha256 file attached; edit the release notes and
+# press "Publish" on GitHub when ready. Tags with a suffix (v1.2.0-rc.1) become
+# pre-releases, which is handy for testing this workflow itself.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      # Catches the easy mistake of tagging before bumping <Version>, which
+      # would ship an exe whose banner/file version disagrees with the release.
+      - name: Check tag matches project version
+        shell: pwsh
+        run: |
+          [xml]$proj = Get-Content src/ZeroDivert.Console/ZeroDivert.Console.csproj
+          $version = @($proj.Project.PropertyGroup.Version | Where-Object { $_ })[0]
+          if ($env:TAG -ne "v$version" -and -not $env:TAG.StartsWith("v$version-")) {
+            throw "Tag $env:TAG does not match <Version>$version</Version> in ZeroDivert.Console.csproj"
+          }
+          # 1.2.0-rc.1 for names, 1.2.0 for the installer's Windows file version.
+          "APP_VERSION=$($env:TAG.Substring(1))" >> $env:GITHUB_ENV
+          "APP_NUMERIC_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Publish (self-contained, single file)
+        run: dotnet publish src/ZeroDivert.Console/ZeroDivert.Console.csproj -p:PublishProfile=win-x64
+
+      - name: Package portable zip + SHA-256
+        shell: pwsh
+        run: |
+          $name = "ZeroDivert-$env:TAG-win-x64"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item src/ZeroDivert.Console/bin/publish/win-x64/* $name/
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+          $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash
+          "$hash  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
+          "ZIP_NAME=$name.zip" >> $env:GITHUB_ENV
+          "ZIP_SHA256=$hash" >> $env:GITHUB_ENV
+
+      - name: Build installer (Inno Setup) + SHA-256
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+          }
+          & $iscc "/DAppVersion=$env:APP_VERSION" "/DAppNumericVersion=$env:APP_NUMERIC_VERSION" installer/ZeroDivert.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          $setup = "ZeroDivert-$env:TAG-setup.exe"
+          Move-Item "installer/Output/$setup" $setup
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash
+          "$hash  $setup" | Out-File -Encoding ascii "$setup.sha256"
+          "SETUP_NAME=$setup" >> $env:GITHUB_ENV
+          "SETUP_SHA256=$hash" >> $env:GITHUB_ENV
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          name: ZeroDivert ${{ github.ref_name }}
+          files: |
+            ${{ env.SETUP_NAME }}
+            ${{ env.SETUP_NAME }}.sha256
+            ${{ env.ZIP_NAME }}
+            ${{ env.ZIP_NAME }}.sha256
+          body: |
+            <!-- Draft created by the release workflow: replace this with the release notes (see CHANGELOG.md) before publishing. -->
+
+            ## Kurulum
+
+            - **Önerilen:** `${{ env.SETUP_NAME }}` dosyasını indirip çalıştırın. Program Files'a kurulur, Başlat menüsüne eklenir ve Program Ekle/Kaldır'dan kaldırılabilir.
+            - **Taşınabilir:** `${{ env.ZIP_NAME }}` dosyasını bir klasöre çıkartıp `ZeroDivert.Console.exe`'yi yönetici olarak çalıştırın.
+
+            .NET kurulumu gerekmez, runtime uygulamanın içinde gelir. Uygulama dijital olarak imzalı değildir: Windows'un **Akıllı Uygulama Denetimi** açıksa çalışmaz; SmartScreen uyarısı çıkarsa **Ek bilgi → Yine de çalıştır** ile devam edebilirsiniz. Ayrıntılar README'nin SSS bölümünde.
+
+            **SHA-256**
+            ```
+            ${{ env.SETUP_SHA256 }}  ${{ env.SETUP_NAME }}
+            ${{ env.ZIP_SHA256 }}  ${{ env.ZIP_NAME }}
+            ```
