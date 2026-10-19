@@ -34,6 +34,30 @@ internal static class Program
             return 1;
         }
 
+        // Only one copy may run: two would each open a WinDivert handle and process
+        // the same Discord packets twice. A second launch (e.g. clicking the Start
+        // menu shortcut while ZeroDivert sits in the tray) just asks the running copy
+        // to show its window and exits. The installer also checks this mutex to stop
+        // upgrades/uninstalls while the app is running.
+        using var instanceMutex = new Mutex(initiallyOwned: true, AppInfo.SingleInstanceMutexName, out var isFirstInstance);
+        if (!isFirstInstance)
+        {
+            try
+            {
+                using var showSignal = EventWaitHandle.OpenExisting(AppInfo.ShowConsoleEventName);
+                showSignal.Set();
+            }
+            catch (WaitHandleCannotBeOpenedException)
+            {
+                // The other copy is still starting up; nothing to signal yet.
+            }
+
+            return 0;
+        }
+
+        ListenForShowConsoleRequests();
+        UpdateChecker.StartIfEnabled();
+
         // Background/tray launch: from the auto-start scheduled task, or manually
         // with --tray. Skips the console menu entirely and resumes whatever state
         // AppStateStore has saved (see TrayApp.Run).
@@ -73,6 +97,27 @@ internal static class Program
         // background. Ctrl+C (or the tray's "Çıkış") is what actually stops
         // monitoring and ends the process.
         return TrayApp.Run(startHidden, initialOptions);
+    }
+
+    /// <summary>
+    /// Brings this copy's console window back when a second copy is launched (see
+    /// the single-instance check in Main).
+    /// </summary>
+    private static void ListenForShowConsoleRequests()
+    {
+        var showSignal = new EventWaitHandle(false, EventResetMode.AutoReset, AppInfo.ShowConsoleEventName);
+        var listener = new Thread(() =>
+        {
+            while (showSignal.WaitOne())
+            {
+                TrayApp.ShowConsole();
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "ShowConsoleListener"
+        };
+        listener.Start();
     }
 
     /// <summary>
@@ -344,7 +389,7 @@ internal static class Program
     internal static void PrintBanner()
     {
         AnsiConsole.Write(new FigletText("ZeroDivert").Centered().Color(Color.Cyan1));
-        AnsiConsole.Write(new Rule("[grey]Discord DPI Bypass Tool v1.1.0[/]").Centered());
+        AnsiConsole.Write(new Rule($"[grey]Discord DPI Bypass Tool {AppInfo.VersionText}[/]").Centered());
         AnsiConsole.WriteLine();
     }
 
@@ -360,6 +405,7 @@ internal static class Program
     private const string StartChoice = "▶  Başlat (Otomatik - önerilen)";
     private const string SettingsChoice = "⚙  Ayarlar";
     private const string InfoChoice = "ℹ  Log ve Profil Bilgisi";
+    private const string AboutChoice = "?  Hakkında";
     private const string ExitChoice = "✕  Çıkış";
 
     /// <summary>
@@ -374,9 +420,18 @@ internal static class Program
             AnsiConsole.Clear();
             PrintBanner();
 
+            // The update check runs in the background, so this shows up on the next
+            // redraw once it has finished.
+            if (UpdateChecker.Available is { } update)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Yeni sürüm var: {Markup.Escape(update.LatestTag)}[/] [grey](indirmek için: Hakkında)[/]");
+                AnsiConsole.WriteLine();
+            }
+
             var choice = AnsiConsole.Prompt(
                 CreateMenu("Ana Menü")
-                    .AddChoices(StartChoice, SettingsChoice, InfoChoice, ExitChoice));
+                    .AddChoices(StartChoice, SettingsChoice, InfoChoice, AboutChoice, ExitChoice));
 
             switch (choice)
             {
@@ -390,8 +445,69 @@ internal static class Program
                 case InfoChoice:
                     ShowInfoScreen();
                     break;
+                case AboutChoice:
+                    ShowAboutScreen();
+                    break;
                 default:
                     return null;
+            }
+        }
+    }
+
+    private static void ShowAboutScreen()
+    {
+        const string downloadChoice = "Yeni sürümün indirme sayfasını aç";
+        const string repoChoice = "GitHub sayfasını aç";
+        const string backChoice = "◀  Geri";
+
+        while (true)
+        {
+            AnsiConsole.Clear();
+            PrintBanner();
+            AnsiConsole.MarkupLine("[grey]Hakkında[/]");
+            AnsiConsole.WriteLine();
+
+            var update = UpdateChecker.Available;
+            var updateText = UpdateChecker.Status switch
+            {
+                UpdateChecker.CheckStatus.Disabled => "[grey]Kapalı (Ayarlar'dan açılabilir)[/]",
+                UpdateChecker.CheckStatus.Checking => "[grey]Kontrol ediliyor...[/]",
+                UpdateChecker.CheckStatus.Failed => "[grey]Kontrol edilemedi (internet bağlantısı yok ya da GitHub'a ulaşılamadı)[/]",
+                UpdateChecker.CheckStatus.UpdateAvailable => $"[yellow]Yeni sürüm var: {Markup.Escape(update!.LatestTag)}[/]",
+                _ => "[green]Güncel[/]"
+            };
+
+            var table = new Table().Border(TableBorder.Rounded).HideHeaders();
+            table.AddColumn("");
+            table.AddColumn("");
+            table.AddRow("[grey]Sürüm[/]", AppInfo.VersionText);
+            table.AddRow("[grey]Güncelleme[/]", updateText);
+            table.AddRow("[grey]Lisans[/]", AppInfo.License);
+            table.AddRow("[grey]Kaynak kod[/]", AppInfo.RepoUrl);
+            if (update != null)
+            {
+                table.AddRow("[grey]İndirme[/]", Markup.Escape(update.ReleaseUrl));
+            }
+
+            AnsiConsole.Write(table);
+            AnsiConsole.WriteLine();
+
+            var choices = new List<string>();
+            if (update != null) choices.Add(downloadChoice);
+            choices.Add(repoChoice);
+            choices.Add(backChoice);
+
+            var choice = AnsiConsole.Prompt(CreateMenu("Hakkında").AddChoices(choices));
+            switch (choice)
+            {
+                case downloadChoice:
+                    AppInfo.OpenInBrowser(update!.ReleaseUrl);
+                    break;
+                case repoChoice:
+                    AppInfo.OpenInBrowser(AppInfo.RepoUrl);
+                    break;
+                default:
+                    return;
             }
         }
     }
@@ -411,9 +527,14 @@ internal static class Program
             AnsiConsole.MarkupLine("[grey]Ayarlar[/]");
             AnsiConsole.WriteLine();
 
+            var checkForUpdates = AppStateStore.Load().CheckForUpdates;
+            var updateCheckChoice = checkForUpdates
+                ? "Güncelleme kontrolü: Açık (kapatmak için seçin)"
+                : "Güncelleme kontrolü: Kapalı (açmak için seçin)";
+
             var choice = AnsiConsole.Prompt(
                 CreateMenu("Ayarlar")
-                    .AddChoices(runOptionsChoice, dnsChoice, autoStartChoice, backChoice));
+                    .AddChoices(runOptionsChoice, dnsChoice, autoStartChoice, updateCheckChoice, backChoice));
 
             switch (choice)
             {
@@ -425,6 +546,12 @@ internal static class Program
                     break;
                 case var c when c == autoStartChoice:
                     RunAutoStartMenu();
+                    break;
+                case var c when c == updateCheckChoice:
+                    AppStateStore.Update(s => s.CheckForUpdates = !checkForUpdates);
+                    // Takes effect on the next launch when turned off; turning it on
+                    // starts a check right away.
+                    UpdateChecker.StartIfEnabled();
                     break;
                 default:
                     return options;
