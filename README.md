@@ -24,16 +24,17 @@ ZeroDivert, İSS'lerin (İnternet Servis Sağlayıcıları) uyguladığı DPI (D
 
 - İSS DPI cihazları TLS bağlantılarındaki **SNI** (Server Name Indication) alanını okuyarak Discord'u tespit eder ve bağlantıyı keser
 - ZeroDivert bu paketleri parçalayarak veya sırasını değiştirerek DPI'ın SNI'ı okuyamamasını sağlar; bir teknik işe yaramazsa (RST veya sessiz paket düşürme tespit edilirse) otomatik olarak bir sonrakini dener
-- Bazı İSS'ler Discord'u DNS seviyesinde de engeller — ZeroDivert bunun için de uygulama içinden (Ana Menü → `Ayarlar → DNS Ayarları`) DNS sunucunuzu değiştirmenizi sağlar
+- Bazı İSS'ler Discord'u **DNS seviyesinde de** engeller (çoğu zaman modemin IPv6 DNS'i üzerinden). ZeroDivert çalışırken bilgisayardaki bütün uygulamaların DNS sorgularını (IPv4 ve IPv6) şifreli **DNS-over-HTTPS (DoH)** ile cevaplar; Windows'un DNS ayarlarına dokunmaz. Bu **DNS koruması** varsayılan olarak açıktır
 - Sunucu tarafında hiçbir değişiklik olmaz, bağlantı normal şekilde kurulur
-- Yalnızca Discord trafiğini (`discord.com`, `discordapp.com`, vb.) işler, geri kalan her şeye dokunmaz
+- Bypass teknikleri yalnızca Discord bağlantılarına (`discord.com`, `discordapp.com`, vb.) uygulanır; diğer bağlantılara dokunulmaz
 
 ### Ne Yapmaz?
 
 - IP adresinizi gizlemez
 - Oyunlarda veya genel internet kullanımında hız değişikliğine neden olmaz
 - IP tabanlı engellemeleri aşamaz
-- Discord dışındaki sitelere müdahale etmez
+- Discord dışındaki sitelerin bağlantılarını değiştirmez (DNS koruması açıkken yalnızca DNS sorguları şifreli olarak cevaplanır)
+- UDP trafiğine (sesli görüşme, oyunlar) dokunmaz
 
 ---
 
@@ -131,7 +132,7 @@ ZeroDivert.Console.exe --tray
 
 Argümansız çalıştırınca açılan **Ana Menü**'den:
 - **Başlat** — izlemeyi başlatır
-- **Ayarlar** — çalışma seçenekleri (`-v`/`--no-log`/`--no-status`), **DNS Ayarları** (ağ adaptörünüzün DNS'ini uygulama içinden Cloudflare/Google/özel bir sunucuya çevirin — bazı İSS'ler Discord'u DNS seviyesinde de engellediği için gerekebilir, bkz. SSS) ve **Başlangıçta Otomatik Başlat**
+- **Ayarlar** — çalışma seçenekleri (`-v`/`--no-log`/`--no-status`), **Bypass tekniği** (otomatik ya da elle seçilen bir teknik), **DNS koruması (DoH)** aç/kapa, **DNS Ayarları** (Windows'un DNS sunucusunu Cloudflare/Google/özel bir sunucuya çevirme), **Başlangıçta Otomatik Başlat** ve **Güncelleme kontrolü**
 - **Log ve Profil Bilgisi** — log/profil dosyalarının yeri ve kayıtlı profilin içeriği (salt okunur)
 - **Hakkında** — sürüm, lisans, GitHub bağlantısı ve güncelleme durumu
 - **Çıkış**
@@ -140,7 +141,17 @@ Argümansız çalıştırınca açılan **Ana Menü**'den:
 
 ZeroDivert açılırken GitHub'daki son sürüme bir kez bakar. Daha yeni bir sürüm varsa Ana Menü'de ve sistem tepsisinde haber verir; tıklayınca indirme sayfası açılır. İndirme ve kurulumu her zaman siz yaparsınız, uygulama kendini kendiliğinden güncellemez.
 
-Bu kontrol, GitHub API'sine (`api.github.com`) yapılan anonim tek bir istekten ibarettir; sizinle veya bilgisayarınızla ilgili hiçbir bilgi gönderilmez. İsterseniz **Ayarlar → Güncelleme kontrolü** ile kapatabilirsiniz. Bunun dışında ZeroDivert hiçbir sunucuya veri göndermez.
+Bu kontrol, GitHub API'sine (`api.github.com`) yapılan anonim tek bir istekten ibarettir; sizinle veya bilgisayarınızla ilgili hiçbir bilgi gönderilmez. İsterseniz **Ayarlar → Güncelleme kontrolü** ile kapatabilirsiniz.
+
+### DNS Koruması (DoH)
+
+ZeroDivert çalışırken, bilgisayardaki bütün uygulamaların düz DNS sorgularını (UDP 53, IPv4 ve IPv6) yakalar ve Cloudflare'in şifreli DNS sunucusuna (`https://1.1.1.1/dns-query`) **DNS-over-HTTPS** ile sorar; cevabı uygulamaya, sorduğu DNS sunucusundan gelmiş gibi iletir. Böylece İSS'nin DNS'i değiştirmesi (ör. `discord.com` için engel sayfasının adresini döndürmesi) etkisiz kalır.
+
+- Windows'un DNS ayarları değişmez; ZeroDivert durunca her şey eski haline döner.
+- Modemin IPv6 DNS'i gibi, Windows'taki "şifreli DNS" ayarının kapsamadığı yollar da korunur.
+- DoH sunucusuna ulaşılamazsa sorgu değiştirilmeden normal yolundan gönderilir; DNS çalışmaya devam eder (korumasız olarak).
+- Canlı panelin **DNS (DoH / düz)** sütunu, DoH ile cevaplanan ve düz DNS'e dönen sorgu sayısını gösterir.
+- **Gizlilik:** DNS koruması açıkken DNS sorgularınız (ziyaret ettiğiniz alan adları) Cloudflare'e gider. İstemezseniz **Ayarlar → DNS koruması (DoH)** ile kapatabilirsiniz. Güncelleme kontrolü ve DNS koruması dışında ZeroDivert hiçbir sunucuya veri göndermez.
 
 ### Sistem Tepsisi ve Otomatik Başlatma
 
@@ -163,23 +174,24 @@ Açılış banner'ı ve Ana Menü:
   / /|  __/ | | (_) | |_| | |\ V /  __/ |  | |_
  /____\___|_|  \___/|____/|_| \_/ \___|_|   \__|
 
-        ── Discord DPI Bypass Tool v1.1.0 ──
+        ── Discord DPI Bypass Tool v1.3.0 ──
 
 Ana Menü (ok tuşları ile gezin, Enter ile seçin)
 > ▶  Başlat (Otomatik - önerilen)
   ⚙  Ayarlar
   ℹ  Log ve Profil Bilgisi
+  ?  Hakkında
   ✕  Çıkış
 ```
 
 "Başlat" seçildikten sonra canlı durum paneli:
 
 ```
-╭────────────────┬────────┬─────────┬──────────────┬─────────┬─────────╮
-│ Teknik          │ Paket  │ Discord │ Değiştirilen │ Veri    │ Hız     │
-├────────────────┼────────┼─────────┼──────────────┼─────────┼─────────┤
-│ TcpFragmentation│ 1.2K   │ 45      │ 45           │ 2.1 MB  │ 150 pkt/s│
-╰────────────────┴────────┴─────────┴──────────────┴─────────┴─────────╯
+╭──────────────────┬───────┬─────────┬──────────────┬────────┬───────────┬─────────────────╮
+│ Teknik           │ Paket │ Discord │ Değiştirilen │ Veri   │ Hız       │ DNS (DoH / düz) │
+├──────────────────┼───────┼─────────┼──────────────┼────────┼───────────┼─────────────────┤
+│ TcpFragmentation │ 1.2K  │ 45      │ 45           │ 2.1 MB │ 150 pkt/s │ 312 / 0         │
+╰──────────────────┴───────┴─────────┴──────────────┴────────┴───────────┴─────────────────╯
 ╭ Durum ─────────────────────────────────────────────────────────────╮
 │ TLS -> gateway.discord.gg                                          │
 ╰──────────────────────────────────────────────────────────────────╯
@@ -193,16 +205,20 @@ Ana Menü (ok tuşları ile gezin, Enter ile seçin)
 
 ## ⚙️ Bypass Teknikleri
 
-**AdaptiveEngine**, aşağıdaki 4 TCP tekniğini sırayla dener; bir teknik art arda başarısız olursa (bağlantı RST ile kesilirse ya da hiç yanıt gelmezse) bir sonrakine geçer, 5 ardışık başarıdan sonra o teknikte "kalibrasyonu tamamlanmış" sayıp `profile.json`'a kaydeder:
+Teknikler yalnızca Discord'a giden TLS bağlantılarının ilk paketine (ClientHello) uygulanır. **Otomatik** modda ZeroDivert aşağıdaki sırayla dener:
 
-| Sıra | Teknik | Açıklama |
-|------|--------|----------|
-| 1 | **TCP Fragmentasyon (Akıllı)** | SNI'ın bulunduğu ilk ~50 baytı 2 baytlık küçük TCP segmentlerine böler; DPI parçaları birleştiremez |
-| 2 | **TCP Desync** | Paket sırasını bozarak DPI'ın TCP state-machine'ini çökertir |
-| 3 | **Fake TTL** | Düşük TTL'li sahte paket gönderir; DPI görür ama paket sunucuya ulaşmaz |
-| 4 | **Kombine** | Yukarıdaki fragmentasyon + desync tekniklerini birlikte uygular |
+| Sıra | Teknik | Ne yapar? |
+|------|--------|-----------|
+| 1 | **TCP Fragmentasyon** | ClientHello'nun ilk 50 baytını (TLS kayıt ve el sıkışma başlıkları) 2 baytlık TCP parçalarına böler, gerisini tek parça gönderir; parçaları birleştirmeyen DPI paketi ClientHello olarak tanıyamaz ve SNI'a bakamaz |
+| 2 | **TCP Desync** | ClientHello'yu ilk birkaç bayttan ikiye böler |
+| 3 | **Fake TTL** | Gerçek ClientHello'dan önce, TTL'i 5 olan sahte bir ClientHello gönderir: İSS'nin DPI cihazına ulaşır ama sunucuya ulaşmadan ölür |
+| 4 | **GoodbyeDPI uyumlu** | GoodbyeDPI-Turkey'nin Türkiye'deki ayarının (`-5 --set-ttl 5`) aynısı: önce TTL 5'li sahte ClientHello, sonra gerçek ClientHello ilk 2 bayttan ikiye bölünüp **ters sırada** gönderilir. GoodbyeDPI bunu bütün sitelere uygular; ZeroDivert yalnızca Discord'a |
 
-Ayrıca hangi TCP tekniği aktifse aktif olsun, Discord'un sesli görüşme trafiği (UDP) için **UDP Fake** tekniği her zaman ek olarak uygulanır.
+**Hangisinin çalıştığını nasıl anlar?** ClientHello'dan sonra bağlantı ilerliyorsa (sunucu cevap vermiş demektir) başarılı; DPI bağlantıyı RST ile keserse ya da 6 saniye içinde hiçbir ilerleme olmazsa (sessiz engelleme) başarısız sayılır. Art arda 3 başarısızlıkta sıradaki tekniğe geçilir; 5 ardışık başarıdan sonra çalışan teknik `profile.json`'a kaydedilir ve sonraki açılışlarda doğrudan kullanılır.
+
+**Elle seçmek:** **Ayarlar → Bypass tekniği**'nden belirli bir tekniği seçerseniz otomatik geçiş yapılmaz. Farklı teknikleri kendi hattınızda karşılaştırmak için kullanışlıdır.
+
+> Türk Telekom'da yaşanan vakada asıl sorunun DNS olduğu görüldü: DNS koruması açıkken ilk teknik (TCP Fragmentasyon) Discord'u açmaya yetti. GoodbyeDPI uyumlu tekniğin sıradaki yeri, farklı hatlarda karşılaştırmalı testlerle yeniden değerlendirilecek.
 
 ---
 
@@ -214,6 +230,11 @@ Ayrıca hangi TCP tekniği aktifse aktif olsun, Discord'un sesli görüşme traf
 git clone https://github.com/umitkrkmz/ZeroDivert.git
 cd ZeroDivert
 dotnet build -c Release
+```
+
+Testleri çalıştırmak için (yönetici yetkisi gerekmez; sürücü yüklenmez):
+```bash
+dotnet test tests/ZeroDivert.Tests
 ```
 
 Yönetici olarak çalıştır:
@@ -233,14 +254,14 @@ dotnet publish src/ZeroDivert.Console -p:PublishProfile=win-x64
 
 ```powershell
 # Inno Setup "herkes için" kurulduysa:
-& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=1.2.0 installer\ZeroDivert.iss
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=1.3.0 installer\ZeroDivert.iss
 # Sadece kendi kullanıcınız için kurulduysa (ör. winget --scope user):
-& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" /DAppVersion=1.2.0 installer\ZeroDivert.iss
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" /DAppVersion=1.3.0 installer\ZeroDivert.iss
 ```
 
 Kurulum dosyası `installer\Output\` klasörüne düşer.
 
-**Yeni sürüm yayınlamak:** üç csproj'daki `<Version>`, `<AssemblyVersion>` ve `<FileVersion>` değerlerini güncelleyin (uygulama sürümünü banner'da ve Hakkında ekranında buradan okur), CHANGELOG'a sürüm başlığını ekleyin, sonra `v` ile başlayan bir tag pushlayın (`git tag v1.2.0 && git push origin v1.2.0`). [Release iş akışı](.github/workflows/release.yml) tag'in sürümle uyuştuğunu kontrol eder; kurulum dosyasını ve taşınabilir zip'i derler, SHA-256'larını hesaplar ve taslak (draft) bir GitHub Release oluşturur. Notları düzenleyip **Publish**'e basmak size kalır. `v1.2.0-rc.1` gibi ekli tag'ler pre-release olarak açılır.
+**Yeni sürüm yayınlamak:** üç csproj'daki `<Version>`, `<AssemblyVersion>` ve `<FileVersion>` değerlerini güncelleyin (uygulama sürümünü banner'da ve Hakkında ekranında buradan okur), CHANGELOG'a sürüm başlığını ekleyin, sonra `v` ile başlayan bir tag pushlayın (`git tag v1.3.0 && git push origin v1.3.0`). [Release iş akışı](.github/workflows/release.yml) tag'in sürümle uyuştuğunu kontrol eder; kurulum dosyasını ve taşınabilir zip'i derler, SHA-256'larını hesaplar ve taslak (draft) bir GitHub Release oluşturur. Notları düzenleyip **Publish**'e basmak size kalır. `v1.3.0-rc.1` gibi ekli tag'ler pre-release olarak açılır.
 
 > `WinDivert.dll` ve `WinDivert64.sys` dosyaları `src/ZeroDivert.Driver/` içinde mevcuttur ve derleme sırasında çıktı klasörüne otomatik kopyalanır. Ayrıca indirmen gerekmez.
 
@@ -263,23 +284,23 @@ Bir not: Bu özellik ilk kurulumdan sonra bir süre **"Değerlendirme"** modunda
 1. **Yönetici olarak çalıştırdığınızdan emin olun**
 2. Antivirüsünüzde ZeroDivert klasörünü istisna olarak ekleyin
 3. Ana Menü'den **Log ve Profil Bilgisi** ekranından profilinizin durumuna bakın; gerekirse `%LOCALAPPDATA%\ZeroDivert\profile.json` dosyasını silin (ya da bu ekrandan not edip elle silin) — yeniden kalibrasyon başlatılır
-4. DNS sunucunuzu şifreli bir sağlayıcıya çevirin — bkz. aşağıdaki madde
-5. `-v` parametresiyle çalıştırıp çıktıyı paylaşın
+4. **Ayarlar → DNS koruması (DoH)**'nun açık olduğundan emin olun — bkz. aşağıdaki madde
+5. **Ayarlar → Bypass tekniği**'nden teknikleri tek tek deneyin
+6. `-v` parametresiyle çalıştırıp çıktıyı paylaşın
 
 **ZeroDivert çalışıyor ama Discord "Checking for updates" / "Update failed" ekranında takılı kalıyor?**
-Bazı İSS'ler Discord'u yalnızca TLS/SNI seviyesinde değil, **DNS seviyesinde de** engelliyor (DNS sorgusu zehirleniyor veya yanlış/erişilemez bir IP döndürülüyor). Bu durumda ZeroDivert'in SNI gizleme tekniği tek başına yetmez, çünkü bağlantı zaten yanlış adrese gitmeye çalışıyordur. Çözüm: DNS sunucunuzu şifreli bir genel DNS'e (ör. Cloudflare `1.1.1.1` / `1.0.0.1`, Google `8.8.8.8` / `8.8.4.4`) çevirin. Bunu yapmanın iki yolu var:
+Bazı İSS'ler Discord'u yalnızca TLS/SNI seviyesinde değil, **DNS seviyesinde de** engelliyor: `discord.com` için gerçek adres yerine engel sayfasının adresi döner (Türk Telekom'da `195.175.254.2`). Bu durumda SNI'ı gizlemek tek başına yetmez, çünkü bağlantı zaten yanlış adrese gidiyordur.
 
-**1. Uygulama içinden (önerilen):** Ana Menü'den **Ayarlar → DNS Ayarları**'na girin, adaptörünüzü seçin, Cloudflare veya Google'ı işaretleyin — ZeroDivert bunu sizin için `netsh` ile uygular, PowerShell'e gerek kalmaz.
+**DNS koruması (DoH)** bunun için var ve varsayılan olarak açık (bkz. [DNS Koruması](#dns-koruması-doh)). ZeroDivert çalışırken `nslookup discord.com` ile kontrol edebilirsiniz: engel sayfası yerine gerçek bir adres dönmeli.
 
-**2. Elle (PowerShell):**
+Windows'un kendi DNS ayarını değiştirmek de bir seçenek (**Ayarlar → DNS Ayarları**), ama iki tuzak var ve DNS koruması ikisinden de etkilenmez:
+- **IPv6:** Windows'ta yalnızca IPv4 için `1.1.1.1 (Şifreli)` ayarlamak yetmez; sorgular modemin IPv6 DNS'ine (`fe80::...`) gidip yine engel sayfasını alabilir. Uygulama içindeki DNS Ayarları bu yüzden IPv4 ve IPv6'yı birlikte ayarlar ve Windows 11'de şifrelemeyi açar.
+- **"Tüm Wi-Fi ağlarının DNS ayarları":** Windows 11'de bu ayar tanımlıysa, ağ başına yaptığınız DNS ayarından önce o kullanılır. DNS Ayarları ekranı, değişiklikten sonra Windows'un gerçekte ne kullandığını test edip gösterir.
 
-```powershell
-# Yönetici PowerShell'de, aktif ağ adaptörünüzün adını Get-NetAdapter ile bulun
-Set-DnsClientServerAddress -InterfaceAlias "Ethernet" -ServerAddresses ("1.1.1.1","1.0.0.1")
-ipconfig /flushdns
-```
+Ayrıca bazı hatlarda `1.1.1.1:53`'e giden **düz** DNS de engelli; şifrelemesiz bir DNS ayarı orada DNS'i tamamen durdurabilir (Windows 10'da şifreli DNS yoktur).
 
-Windows 11'de bu DNS sunucuları otomatik olarak şifreli (DNS-over-HTTPS) modda çalışır, bu da İSS'nin DNS sorgunuzu görüp müdahale etmesini engeller. DNS engeli ile SNI engeli genelde birlikte uygulandığından, kalıcı çözüm için **hem DNS değişikliği hem de ZeroDivert'in aynı anda çalışması** gerekir — biri tek başına yeterli olmayabilir.
+**Limbo ile aynı anda çalıştırabilir miyim?**
+Hayır. İkisi de Discord'un TLS el sıkışmasını değiştirir; aynı anda çalışırlarsa Discord bağlantıları bozulabilir ve kalibrasyon sonuçları karışır. Birini ya da diğerini kullanın. Limbo, ZeroDivert'in çalıştığını görünce uyarı verir. Aynı şey GoodbyeDPI için de geçerlidir.
 
 **Hangi Windows sürümlerinde çalışır?**
 Windows 10 ve Windows 11 (64-bit). 32-bit sistemler desteklenmez.
@@ -291,17 +312,17 @@ VPN tüm trafiğinizi yavaşlatır, oyunda ping artar ve ücretsiz VPN'ler güve
 
 ## 🔗 Limbo ile İlişki
 
-ZeroDivert, **[Limbo](https://github.com/umitkrkmz/Limbo)** projesinin ilk versiyonu olarak geliştirilen bir proof-of-concept araçtır.
+ZeroDivert, kardeş proje **[Limbo](https://github.com/umitkrkmz/Limbo)**'nun Discord'a odaklanmış küçük kardeşidir. İkisi aynı yazarın, ikisi de GPL-3.0-or-later lisanslı ve birbirinden kod alıp verirler (ör. ZeroDivert'in DNS koruması Limbo'dan taşındı).
 
-Limbo, ZeroDivert'in Discord odaklı yaklaşımını çok daha geniş bir platforma taşır:
-- Discord yerine **tüm domainler** için per-domain profil sistemi
-- **Radar sistemi** — ISP engeli olan domainleri otomatik tespit eder
-- **ECH** (Encrypted Client Hello) — tam X25519 HPKE şifrelemesi
-- **DNS over HTTPS** — Cloudflare, Google, Quad9 desteği
-- **GUI** (WPF, Dark/Light tema) + kapsamlı CLI
-- ISP davranış analizi, gerçek zamanlı bant genişliği izleme
+Limbo aynı yaklaşımı bütün sitelere genişletir:
+- **Alan adı başına profiller:** her site için ayrı teknik
+- **Radar:** İSS'nin engellediği alan adlarını kendisi fark edip profil oluşturur
+- **GoodbyeDPI tarzı genel mod:** profili olmayan bütün HTTPS/HTTP bağlantılarına uygulanır
+- **DNS koruması:** bütün uygulamaların DNS sorgularını (IPv4 + IPv6) DoH ile cevaplar
+- **Ağ analizi:** İSS'yi tanır; DNS değiştirme, RST enjeksiyonu ve sessiz engellemeyi raporlar
+- **Etkileşimli + betiklenebilir konsol** (GUI yok) ve kurulum dosyası
 
-ZeroDivert'i Discord için kullanıyorsanız ve daha fazlasına ihtiyaç duyuyorsanız **[Limbo'ya göz atın →](https://github.com/umitkrkmz/Limbo)**
+Sadece Discord'u açmak istiyorsanız ZeroDivert yeterli; daha fazlasına ihtiyaç duyarsanız **[Limbo'ya göz atın →](https://github.com/umitkrkmz/Limbo)**. İkisini aynı anda çalıştırmayın (bkz. SSS).
 
 ---
 
@@ -317,7 +338,7 @@ Pull request'ler memnuniyetle karşılanır. Detaylar için [CONTRIBUTING.md](CO
 ## 🙏 Teşekkürler
 
 - **[basil00/WinDivert](https://github.com/basil00/WinDivert)** — Windows kernel seviyesi paket yakalama kütüphanesi. ZeroDivert'in temel bağımlılığıdır. (LGPL v3 / GPL v2)
-- **[ValdikSS/GoodbyeDPI](https://github.com/ValdikSS/GoodbyeDPI)** — DPI bypass tekniklerinin öncüsü. TCP fragmentasyon ve fake paket yöntemlerinin ilham kaynağı.
+- **[ValdikSS/GoodbyeDPI](https://github.com/ValdikSS/GoodbyeDPI)** — DPI bypass tekniklerinin öncüsü. "GoodbyeDPI uyumlu" teknik onun kaynak koduna göre yazıldı ve sahte ClientHello'su GoodbyeDPI'ınkinin aynısıdır (Apache-2.0, bkz. `THIRD-PARTY-NOTICES.txt`).
 - **[cagritaskn/GoodbyeDPI-Turkey](https://github.com/cagritaskn/GoodbyeDPI-Turkey)** — GoodbyeDPI'ın Türkiye ISS'lerine uyarlanmış versiyonu.
 - **[bol-van/zapret](https://github.com/bol-van/zapret)** — En kapsamlı DPI atlatma aracı.
 
