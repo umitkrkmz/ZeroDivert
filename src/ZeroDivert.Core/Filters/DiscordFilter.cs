@@ -34,12 +34,16 @@ public static class DiscordFilter
     ///   handshake (i.e. the server answered);
     /// - inbound RSTs from port 443: the only inbound packets needed, to notice DPI
     ///   resetting a Discord handshake. They are few, so this costs nothing.
-    /// No UDP and no port 80: Discord's voice traffic is left alone (GoodbyeDPI
-    /// doesn't touch it either), and Discord is HTTPS-only.
+    /// - with <paramref name="interceptDns"/>: outbound DNS queries (UDP 53, any
+    ///   app, IPv4 and IPv6) for DnsInterceptor. Loopback is excluded so a local
+    ///   DNS proxy's own traffic is left alone.
+    /// No other UDP and no port 80: Discord's voice traffic is left alone
+    /// (GoodbyeDPI doesn't touch it either), and Discord is HTTPS-only.
     /// </summary>
-    public static string GenerateFilter() =>
+    public static string GenerateFilter(bool interceptDns = false) =>
         "(outbound and tcp.DstPort == 443) or " +
-        "(inbound and tcp.SrcPort == 443 and tcp.Rst)";
+        "(inbound and tcp.SrcPort == 443 and tcp.Rst)" +
+        (interceptDns ? " or (outbound and !loopback and udp.DstPort == 53)" : "");
 
     /// <summary>
     /// Checks if SNI matches Discord domain

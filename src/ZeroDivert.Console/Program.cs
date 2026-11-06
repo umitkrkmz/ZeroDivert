@@ -6,6 +6,7 @@ using ZeroDivert.Core.Adaptive;
 using ZeroDivert.Core.Bypass;
 using ZeroDivert.Core.Config;
 using ZeroDivert.Core.Detection;
+using ZeroDivert.Core.Dns;
 using ZeroDivert.Core.Filters;
 using ZeroDivert.Core.Logging;
 using ZeroDivert.Driver;
@@ -199,7 +200,17 @@ internal static class Program
 
     private static async Task RunAsync(AdaptiveEngine adaptiveEngine, CancellationToken ct)
     {
-        var filter = DiscordFilter.GenerateFilter();
+        // Answer every app's plain DNS over DoH while monitoring (see DnsInterceptor).
+        using var dnsInterceptor = AppStateStore.Load().DnsOverHttps
+            ? new DnsInterceptor(DoHClient.DefaultServerUrl)
+            : null;
+        if (dnsInterceptor != null)
+        {
+            dnsInterceptor.OnLog += WriteInfo;
+            WriteInfo($"DNS: tüm uygulamaların DNS sorguları DoH ile cevaplanıyor ({DoHClient.DefaultServerUrl})");
+        }
+
+        var filter = DiscordFilter.GenerateFilter(interceptDns: dnsInterceptor != null);
         WriteInfo($"Filter: {filter}");
 
         _handle = WinDivertHandle.Open(filter, WinDivertLayer.Network, 0, WinDivertFlag.None);
@@ -267,8 +278,23 @@ internal static class Program
                 Interlocked.Add(ref _bytesProcessed, recvLen);
 
                 _panel?.UpdateStats(packetsTotal, packetsModified, discordPackets, _bytesProcessed);
+                _panel?.UpdateDns(dnsInterceptor != null, dnsInterceptor?.AnsweredViaDoH ?? 0, dnsInterceptor?.FellBackToPlainDns ?? 0);
 
                 var context = PacketInspector.Analyze(packet, addr.Outbound);
+
+                if (context.IsUdp)
+                {
+                    // Only outbound DNS queries match the filter's UDP clause. The
+                    // interceptor answers asynchronously, so the loop never waits on DoH.
+                    var queryAddr = addr;
+                    if (dnsInterceptor?.TryIntercept(packet, addr.Outbound,
+                            (bytes, asInboundReply) => InjectFromAnyThread(bytes, queryAddr, asInboundReply)) != true)
+                    {
+                        handle.Send(packet, out _, ref addr);
+                    }
+
+                    continue;
+                }
 
                 if (!addr.Outbound)
                 {
@@ -353,11 +379,42 @@ internal static class Program
         }
         finally
         {
+            // First, so DoH answers still in flight are dropped rather than sent
+            // through a handle that is about to close.
+            dnsInterceptor?.Dispose();
+
             statsTimer.Stop();
             handle.Shutdown();
             _handle = null;
 
             _logger?.LogStats(packetsTotal, discordPackets, packetsModified, _bytesProcessed);
+        }
+    }
+
+    /// <summary>
+    /// Sends a packet built off the capture thread (a DoH answer, or the original DNS
+    /// query when DoH failed). <paramref name="addr"/> is a copy of the query's own
+    /// address; a reply keeps its interface indexes but is marked inbound, the same
+    /// way WinDivert's netfilter sample injects replies.
+    /// </summary>
+    private static void InjectFromAnyThread(byte[] packet, WinDivertAddress addr, bool asInboundReply)
+    {
+        var handle = _handle;
+        if (handle == null) return;
+
+        if (asInboundReply)
+        {
+            addr.Outbound = false;
+        }
+
+        try
+        {
+            WinDivertHandle.CalcChecksums(packet, ref addr);
+            handle.Send(packet, out _, ref addr);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Monitoring stopped while the answer was in flight; nothing to send through.
         }
     }
 
@@ -515,14 +572,19 @@ internal static class Program
             AnsiConsole.MarkupLine("[grey]Ayarlar[/]");
             AnsiConsole.WriteLine();
 
-            var checkForUpdates = AppStateStore.Load().CheckForUpdates;
+            var state = AppStateStore.Load();
+            var checkForUpdates = state.CheckForUpdates;
+            var dnsOverHttps = state.DnsOverHttps;
+            var dohChoice = dnsOverHttps
+                ? "DNS koruması (DoH): Açık (kapatmak için seçin)"
+                : "DNS koruması (DoH): Kapalı (açmak için seçin)";
             var updateCheckChoice = checkForUpdates
                 ? "Güncelleme kontrolü: Açık (kapatmak için seçin)"
                 : "Güncelleme kontrolü: Kapalı (açmak için seçin)";
 
             var choice = AnsiConsole.Prompt(
                 CreateMenu("Ayarlar")
-                    .AddChoices(runOptionsChoice, dnsChoice, autoStartChoice, updateCheckChoice, backChoice));
+                    .AddChoices(runOptionsChoice, dohChoice, dnsChoice, autoStartChoice, updateCheckChoice, backChoice));
 
             switch (choice)
             {
@@ -534,6 +596,10 @@ internal static class Program
                     break;
                 case var c when c == autoStartChoice:
                     RunAutoStartMenu();
+                    break;
+                case var c when c == dohChoice:
+                    // Read when monitoring starts, so it applies from the next Başlat.
+                    AppStateStore.Update(s => s.DnsOverHttps = !dnsOverHttps);
                     break;
                 case var c when c == updateCheckChoice:
                     AppStateStore.Update(s => s.CheckForUpdates = !checkForUpdates);

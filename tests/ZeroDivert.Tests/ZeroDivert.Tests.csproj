@@ -20,11 +20,17 @@
   </ItemGroup>
 
   <!--
-    Only Core: the tested logic (handshake tracking, DNS packets, bypass
-    strategies) doesn't need WinDivert, WinForms or admin rights.
+    Core for the logic under test; Driver only for WinDivert's filter helpers
+    (WinDivertHelperCompileFilter / EvalFilter), which run in user mode - they
+    neither load the kernel driver nor need admin rights. No Console/WinForms.
   -->
   <ItemGroup>
     <ProjectReference Include="..\..\src\ZeroDivert.Core\ZeroDivert.Core.csproj" />
+    <ProjectReference Include="..\..\src\ZeroDivert.Driver\ZeroDivert.Driver.csproj" />
   </ItemGroup>
+
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
 
 </Project>

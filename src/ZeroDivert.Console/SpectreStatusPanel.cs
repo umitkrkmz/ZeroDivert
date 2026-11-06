@@ -24,6 +24,9 @@ public sealed class SpectreStatusPanel : IDisposable
     private long _packetsModified;
     private long _discordPackets;
     private long _bytesProcessed;
+    private bool _dnsEnabled;
+    private long _dnsAnswered;
+    private long _dnsFellBack;
     private bool _disposed;
 
     public void Start()
@@ -69,6 +72,17 @@ public sealed class SpectreStatusPanel : IDisposable
         }
     }
 
+    /// <summary>DoH counters from DnsInterceptor; call with enabled=false when DoH is off.</summary>
+    public void UpdateDns(bool enabled, long answeredViaDoH, long fellBackToPlainDns)
+    {
+        lock (_lock)
+        {
+            _dnsEnabled = enabled;
+            _dnsAnswered = answeredViaDoH;
+            _dnsFellBack = fellBackToPlainDns;
+        }
+    }
+
     public void WriteLine(string message)
     {
         lock (_lock)
@@ -95,13 +109,19 @@ public sealed class SpectreStatusPanel : IDisposable
             stats.AddColumn(new TableColumn("[grey]Değiştirilen[/]"));
             stats.AddColumn(new TableColumn("[grey]Veri[/]"));
             stats.AddColumn(new TableColumn("[grey]Hız[/]"));
+            stats.AddColumn(new TableColumn("[grey]DNS (DoH / düz)[/]"));
             stats.AddRow(
                 $"[cyan]{Markup.Escape(_technique)}[/]",
                 FormatNumber(_packetsTotal),
                 FormatNumber(_discordPackets),
                 FormatNumber(_packetsModified),
                 FormatBytes(_bytesProcessed),
-                $"{pps:F0} pkt/s");
+                $"{pps:F0} pkt/s",
+                !_dnsEnabled
+                    ? "[grey]kapalı[/]"
+                    : _dnsFellBack > 0
+                        ? $"{FormatNumber(_dnsAnswered)} / [yellow]{FormatNumber(_dnsFellBack)}[/]"
+                        : $"{FormatNumber(_dnsAnswered)} / 0");
 
             var statusText = string.IsNullOrEmpty(_status) ? "İzleniyor..." : _status;
             var statusPanel = new Panel(new Markup($"[bold]{Markup.Escape(statusText)}[/]"))
