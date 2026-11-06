@@ -15,4 +15,8 @@
     <Description>ZeroDivert - Core Library</Description>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="ZeroDivert.Tests" />
+  </ItemGroup>
+
 </Project>
