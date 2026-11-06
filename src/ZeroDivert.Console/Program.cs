@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using Spectre.Console;
 using Color = Spectre.Console.Color;
@@ -725,80 +726,174 @@ internal static class Program
                 return;
             }
 
-            var table = new Table().Border(TableBorder.Rounded);
-            table.AddColumn("Adaptör");
-            table.AddColumn("DNS Kaynağı");
-            table.AddColumn("DNS Sunucuları");
-            foreach (var adapter in adapters)
-            {
-                table.AddRow(
-                    Markup.Escape(adapter.Name),
-                    adapter.IsDhcp ? "[grey]Otomatik (DHCP)[/]" : "[yellow]El ile[/]",
-                    adapter.DnsServers.Count > 0 ? Markup.Escape(string.Join(", ", adapter.DnsServers)) : "[grey]-[/]");
-            }
-            AnsiConsole.Write(table);
-            AnsiConsole.WriteLine();
+            WriteDnsTable(adapters);
+            WriteDnsWarnings(adapters);
 
             var adapterChoices = adapters.Select(a => a.Name).Append(backChoice).ToArray();
-            var selectedAdapter = AnsiConsole.Prompt(
-                CreateMenu("DNS Ayarları")
-                    .AddChoices(adapterChoices));
+            var selectedName = AnsiConsole.Prompt(CreateMenu("DNS Ayarları").AddChoices(adapterChoices));
+            if (selectedName == backChoice) return;
+            var adapter = adapters.First(a => a.Name == selectedName);
 
-            if (selectedAdapter == backChoice) return;
-
-            const string cloudflareChoice = "Cloudflare (1.1.1.1 / 1.0.0.1)";
-            const string googleChoice = "Google (8.8.8.8 / 8.8.4.4)";
+            var cloudflareChoice = PresetLabel(DnsSettingsManager.Cloudflare, adapter);
+            var googleChoice = PresetLabel(DnsSettingsManager.Google, adapter);
             const string customChoice = "Özel DNS gir";
-            const string dhcpChoice = "Otomatik (DHCP) - varsayılana dön";
+            const string dhcpChoice = "Otomatik (DHCP) - varsayılana dön (IPv4 ve IPv6)";
 
             var dnsChoice = AnsiConsole.Prompt(
-                CreateMenu($"{Markup.Escape(selectedAdapter)} için DNS seçin")
+                CreateMenu($"{Markup.Escape(adapter.Name)} için DNS seçin")
                     .AddChoices(cloudflareChoice, googleChoice, customChoice, dhcpChoice, backChoice));
 
-            (bool ok, string message) result;
-            switch (dnsChoice)
+            DnsApplyResult result;
+            if (dnsChoice == cloudflareChoice) result = DnsSettingsManager.Apply(adapter, DnsSettingsManager.Cloudflare);
+            else if (dnsChoice == googleChoice) result = DnsSettingsManager.Apply(adapter, DnsSettingsManager.Google);
+            else if (dnsChoice == customChoice) result = DnsSettingsManager.Apply(adapter, PromptCustomDns(adapter));
+            else if (dnsChoice == dhcpChoice) result = DnsSettingsManager.ResetToDhcp(adapter);
+            else continue;
+
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine(result.Success
+                ? $"[green]{Markup.Escape(result.Message)}[/]"
+                : $"[red]Hata: {Markup.Escape(result.Message)}[/]");
+            foreach (var warning in result.Warnings)
             {
-                case cloudflareChoice:
-                    result = DnsSettingsManager.SetDns(selectedAdapter, "1.1.1.1", "1.0.0.1");
-                    break;
-                case googleChoice:
-                    result = DnsSettingsManager.SetDns(selectedAdapter, "8.8.8.8", "8.8.4.4");
-                    break;
-                case customChoice:
-                    var (primary, secondary) = PromptCustomDns();
-                    result = DnsSettingsManager.SetDns(selectedAdapter, primary, secondary);
-                    break;
-                case dhcpChoice:
-                    result = DnsSettingsManager.ResetToDhcp(selectedAdapter);
-                    break;
-                default:
-                    continue;
+                AnsiConsole.MarkupLine($"[yellow]{Markup.Escape(warning)}[/]");
             }
 
-            AnsiConsole.MarkupLine(result.ok
-                ? $"[green]{Markup.Escape(result.message)}[/]"
-                : $"[red]Hata: {Markup.Escape(result.message)}[/]");
+            if (result.Success)
+            {
+                VerifyDns(adapter, offerRevert: dnsChoice != dhcpChoice);
+            }
+
             AnsiConsole.MarkupLine("[grey]Devam etmek için bir tuşa basın...[/]");
             System.Console.ReadKey(true);
         }
     }
 
-    private static (string primary, string? secondary) PromptCustomDns()
+    private static string PresetLabel(DnsPreset preset, NetworkAdapterInfo adapter)
     {
-        var primary = AnsiConsole.Prompt(
-            new TextPrompt<string>("Birincil DNS adresi:")
-                .Validate(v => System.Net.IPAddress.TryParse(v, out _)
-                    ? ValidationResult.Success()
-                    : ValidationResult.Error("[red]Geçersiz IP adresi[/]")));
+        var addresses = string.Join(" / ", preset.Ipv4);
+        if (adapter.SupportsIPv6) addresses += " + IPv6";
+        var encrypted = DnsSettingsManager.SupportsEncryptedDns ? ", şifreli" : "";
+        return $"{preset.Name} ({addresses}{encrypted})";
+    }
 
-        var secondary = AnsiConsole.Prompt(
-            new TextPrompt<string>("İkincil DNS adresi (opsiyonel, boş bırakabilirsiniz):")
+    private static void WriteDnsTable(IReadOnlyList<NetworkAdapterInfo> adapters)
+    {
+        var table = new Table().Border(TableBorder.Rounded);
+        table.AddColumn("Adaptör");
+        table.AddColumn("DNS Kaynağı");
+        table.AddColumn("IPv4 DNS");
+        table.AddColumn("IPv6 DNS");
+        foreach (var adapter in adapters)
+        {
+            table.AddRow(
+                Markup.Escape(adapter.Name),
+                adapter.IsDhcp ? "[grey]Otomatik (DHCP)[/]" : "[yellow]El ile[/]",
+                AddressCell(adapter.Ipv4Dns),
+                adapter.SupportsIPv6 ? AddressCell(adapter.Ipv6Dns) : "[grey]IPv6 kapalı[/]");
+        }
+
+        AnsiConsole.Write(table);
+        AnsiConsole.WriteLine();
+    }
+
+    private static string AddressCell(IReadOnlyList<string> addresses) =>
+        addresses.Count > 0 ? Markup.Escape(string.Join("\n", addresses)) : "[grey]-[/]";
+
+    private static void WriteDnsWarnings(IReadOnlyList<NetworkAdapterInfo> adapters)
+    {
+        var dnsProtection = AppStateStore.Load().DnsOverHttps;
+        if (!dnsProtection && adapters.Any(a => a.Ipv6Dns.Count > 0))
+        {
+            AnsiConsole.MarkupLine("[yellow]IPv6 DNS sunucusu olan bir bağdaştırıcı var ve DNS koruması (DoH) kapalı: DNS sorguları bu yoldan İSS'ye gidip değiştirilebilir. Ayarlar'dan DNS korumasını açmanız önerilir.[/]");
+        }
+
+        if (!DnsSettingsManager.SupportsEncryptedDns)
+        {
+            AnsiConsole.MarkupLine("[yellow]Windows 10'da şifreli DNS yok: burada ayarlanan sunuculara sorgular düz metin gider. Düz DNS'in engellendiği hatlarda ZeroDivert'in DNS korumasını (DoH) açık tutun.[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine("[grey]Not: Windows 11'de Ayarlar > Ağ ve İnternet > Wi-Fi altındaki \"Tüm Wi-Fi ağlarının DNS ayarları\" tanımlıysa, burada görünen ağ başına ayardan önce o kullanılır. Ayarı uyguladıktan sonra yapılan test, Windows'un gerçekte ne kullandığını gösterir.[/]");
+        }
+
+        AnsiConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// After a change: show what the adapter now reports, then resolve a name the
+    /// way apps do. If that fails, offer to go back to DHCP so the user isn't left
+    /// without DNS.
+    /// </summary>
+    private static void VerifyDns(NetworkAdapterInfo adapter, bool offerRevert)
+    {
+        var updated = DnsSettingsManager.ListAdapters().FirstOrDefault(a => a.Name == adapter.Name) ?? adapter;
+        AnsiConsole.MarkupLine($"Bağdaştırıcının bildirdiği DNS: IPv4 [bold]{Markup.Escape(string.Join(", ", updated.Ipv4Dns.DefaultIfEmpty("-")))}[/], IPv6 [bold]{Markup.Escape(string.Join(", ", updated.Ipv6Dns.DefaultIfEmpty("-")))}[/]");
+
+        var check = AnsiConsole.Status().Start(
+            $"{DnsSettingsManager.TestName} çözümleniyor...",
+            _ => DnsSettingsManager.CheckResolutionAsync().GetAwaiter().GetResult());
+
+        if (!check.Succeeded)
+        {
+            AnsiConsole.MarkupLine($"[red]{DnsSettingsManager.TestName} çözümlenemedi: yeni DNS sunucusuna ulaşılamıyor olabilir. Bu haliyle internet çalışmayabilir.[/]");
+            if (!offerRevert) return;
+
+            const string revert = "Otomatik (DHCP)'ye geri dön (önerilen)";
+            const string keep = "Böyle kalsın";
+            if (AnsiConsole.Prompt(CreateMenu("Ne yapalım?").AddChoices(revert, keep)) == revert)
+            {
+                var reverted = DnsSettingsManager.ResetToDhcp(adapter);
+                AnsiConsole.MarkupLine(reverted.Success
+                    ? $"[green]{Markup.Escape(reverted.Message)}[/]"
+                    : $"[red]Hata: {Markup.Escape(reverted.Message)}[/]");
+            }
+
+            return;
+        }
+
+        var answer = string.Join(", ", check.SystemAddresses.Take(3));
+        if (check.MatchesDoH == false)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Windows {DnsSettingsManager.TestName} için {Markup.Escape(answer)} döndürdü, ama bu DoH ile alınan cevaptan farklı: DNS hâlâ İSS tarafından değiştiriliyor olabilir (ör. IPv6 DNS veya \"Tüm Wi-Fi ağlarının DNS ayarları\"). ZeroDivert'in DNS koruması (DoH) bunu izleme sırasında düzeltir.[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine($"[green]Test başarılı: {DnsSettingsManager.TestName} → {Markup.Escape(answer)}[/]");
+        }
+    }
+
+    private static DnsPreset PromptCustomDns(NetworkAdapterInfo adapter)
+    {
+        var ipv4 = new List<string> { PromptAddress("Birincil IPv4 DNS adresi:", AddressFamily.InterNetwork, optional: false)! };
+        if (PromptAddress("İkincil IPv4 DNS adresi (opsiyonel):", AddressFamily.InterNetwork, optional: true) is { } v4b)
+            ipv4.Add(v4b);
+
+        var ipv6 = new List<string>();
+        if (adapter.SupportsIPv6 &&
+            PromptAddress("Birincil IPv6 DNS adresi (opsiyonel):", AddressFamily.InterNetworkV6, optional: true) is { } v6a)
+        {
+            ipv6.Add(v6a);
+            if (PromptAddress("İkincil IPv6 DNS adresi (opsiyonel):", AddressFamily.InterNetworkV6, optional: true) is { } v6b)
+                ipv6.Add(v6b);
+        }
+
+        return new DnsPreset("Özel", [.. ipv4], [.. ipv6], DohTemplate: null);
+    }
+
+    private static string? PromptAddress(string prompt, AddressFamily family, bool optional)
+    {
+        var familyName = family == AddressFamily.InterNetwork ? "IPv4" : "IPv6";
+        var value = AnsiConsole.Prompt(
+            new TextPrompt<string>(prompt)
                 .AllowEmpty()
-                .Validate(v => string.IsNullOrWhiteSpace(v) || System.Net.IPAddress.TryParse(v, out _)
-                    ? ValidationResult.Success()
-                    : ValidationResult.Error("[red]Geçersiz IP adresi[/]")));
+                .Validate(v =>
+                    (optional && string.IsNullOrWhiteSpace(v)) ||
+                    (System.Net.IPAddress.TryParse(v, out var ip) && ip.AddressFamily == family)
+                        ? ValidationResult.Success()
+                        : ValidationResult.Error($"[red]Geçerli bir {familyName} adresi girin[/]")));
 
-        return (primary, string.IsNullOrWhiteSpace(secondary) ? null : secondary);
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
     private static void ShowInfoScreen()

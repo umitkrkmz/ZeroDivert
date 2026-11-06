@@ -9,7 +9,7 @@ namespace ZeroDivert.Core.Dns;
 /// answers. Wire format works with every RFC 8484 server; the JSON API it replaces
 /// is a per-provider extension (Google serves it on another path, Quad9 not at all).
 /// </summary>
-internal static class DnsMessage
+public static class DnsMessage
 {
     public const ushort TypeA = 1;
     public const ushort TypeAaaa = 28;
