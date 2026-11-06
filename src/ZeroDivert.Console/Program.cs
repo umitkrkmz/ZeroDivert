@@ -453,6 +453,17 @@ internal static class Program
         AnsiConsole.WriteLine();
     }
 
+    /// <summary>
+    /// One-line header for sub-screens. The Figlet banner is 6 lines; repeating it
+    /// above a table and a menu pushed screens like DNS past the 30 rows of a default
+    /// console window, scrolling the top out of view.
+    /// </summary>
+    private static void PrintHeader()
+    {
+        AnsiConsole.Write(new Rule($"[cyan1]ZeroDivert[/] [grey]{AppInfo.VersionText}[/]").LeftJustified());
+        AnsiConsole.WriteLine();
+    }
+
     private static SelectionPrompt<string> CreateMenu(string title) =>
         new SelectionPrompt<string>()
             .Title($"[bold]{title}[/] [grey](ok tuşları ile gezin, Enter ile seçin)[/]")
@@ -523,7 +534,7 @@ internal static class Program
         while (true)
         {
             AnsiConsole.Clear();
-            PrintBanner();
+            PrintHeader();
             AnsiConsole.MarkupLine("[grey]Hakkında[/]");
             AnsiConsole.WriteLine();
 
@@ -584,7 +595,7 @@ internal static class Program
         while (true)
         {
             AnsiConsole.Clear();
-            PrintBanner();
+            PrintHeader();
             AnsiConsole.MarkupLine("[grey]Ayarlar[/]");
             AnsiConsole.WriteLine();
 
@@ -648,7 +659,7 @@ internal static class Program
     private static void PromptForTechnique(BypassTechnique? current)
     {
         AnsiConsole.Clear();
-        PrintBanner();
+        PrintHeader();
         AnsiConsole.MarkupLine("[grey]Ayarlar[/] [grey]>[/] [bold]Bypass tekniği[/]");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Otomatik[/]: ZeroDivert teknikleri sırayla dener; Discord bağlantısı art arda başarısız olursa bir sonrakine geçer ve çalışanı hatırlar.");
@@ -674,7 +685,7 @@ internal static class Program
         while (true)
         {
             AnsiConsole.Clear();
-            PrintBanner();
+            PrintHeader();
             AnsiConsole.MarkupLine("[grey]Ayarlar[/] [grey]>[/] [bold]Başlangıçta Otomatik Başlat[/]");
             AnsiConsole.WriteLine();
             AnsiConsole.MarkupLine(
@@ -713,7 +724,7 @@ internal static class Program
         while (true)
         {
             AnsiConsole.Clear();
-            PrintBanner();
+            PrintHeader();
             AnsiConsole.MarkupLine("[grey]Ayarlar[/] [grey]>[/] [bold]DNS[/]");
             AnsiConsole.WriteLine();
 
@@ -899,7 +910,7 @@ internal static class Program
     private static void ShowInfoScreen()
     {
         AnsiConsole.Clear();
-        PrintBanner();
+        PrintHeader();
         AnsiConsole.MarkupLine("[grey]Log ve Profil Bilgisi[/]");
         AnsiConsole.WriteLine();
 
