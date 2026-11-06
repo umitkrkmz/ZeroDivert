@@ -130,11 +130,6 @@ public class AdaptiveEngine
                 ApplyDefaultStrategy();
                 break;
         }
-
-        if (config.UdpFake.Enabled)
-        {
-            _bypassEngine.AddStrategy(new UdpFakeStrategy(config.UdpFake.FakeCount));
-        }
     }
 
     private void ApplyTechnique(BypassTechnique technique)
@@ -163,8 +158,6 @@ public class AdaptiveEngine
                 ApplyDefaultStrategy();
                 break;
         }
-
-        _bypassEngine.AddStrategy(new UdpFakeStrategy(1));
     }
 
     private void ApplyDefaultStrategy()
@@ -172,7 +165,6 @@ public class AdaptiveEngine
         _bypassEngine.ClearStrategies();
         _bypassEngine.AddStrategy(new SmartFragmentationStrategy(2, 50));
         _bypassEngine.AddStrategy(new DesyncStrategy(DesyncMode.Split, 3));
-        _bypassEngine.AddStrategy(new UdpFakeStrategy(1));
     }
 
     private void Log(string message) => OnLog?.Invoke(message);

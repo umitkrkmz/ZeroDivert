@@ -60,11 +60,6 @@ public class StrategyConfig
     /// Fake TTL settings
     /// </summary>
     public FakeTtlConfig FakeTtl { get; set; } = new();
-
-    /// <summary>
-    /// UDP fake settings
-    /// </summary>
-    public UdpFakeConfig UdpFake { get; set; } = new();
 }
 
 public class TcpFragmentConfig
@@ -121,19 +116,6 @@ public class FakeTtlConfig
     /// TTL for real packets
     /// </summary>
     public byte RealTtl { get; set; } = 64;
-}
-
-public class UdpFakeConfig
-{
-    /// <summary>
-    /// Enable UDP fake packets
-    /// </summary>
-    public bool Enabled { get; set; } = true;
-
-    /// <summary>
-    /// Number of fake packets to send
-    /// </summary>
-    public int FakeCount { get; set; } = 1;
 }
 
 public class TestResult

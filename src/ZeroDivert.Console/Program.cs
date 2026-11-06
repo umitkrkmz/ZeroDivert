@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using Spectre.Console;
 using Color = Spectre.Console.Color;
@@ -244,18 +245,11 @@ internal static class Program
         long packetsModified = 0;
         long discordPackets = 0;
 
-        // Tracks Discord ClientHellos we've sent (by local port) that haven't been
-        // confirmed yet, so the outcome can be attributed to the technique currently
-        // in use and reported back to the adaptive engine. An entry is cleared by:
-        //   - an inbound RST on that port -> explicit failure (DPI reset the connection)
-        //   - any other inbound packet on that port -> the server responded, treat as OK
-        //   - no inbound packet at all before helloTimeout -> silent failure (DPI is
-        //     blackholing the packets rather than sending a RST, which a pure
-        //     RST-based check would never notice)
-        var pendingHellos = new Dictionary<ushort, DateTime>();
-        var helloTimeout = TimeSpan.FromSeconds(6);
-        var lastPendingSweep = DateTime.UtcNow;
-        var pendingSweepInterval = TimeSpan.FromSeconds(1);
+        // Judges each Discord handshake from what the filter actually captures (our
+        // outbound packets + inbound RSTs) and reports the outcome to the adaptive
+        // engine, which rotates techniques on repeated failures.
+        var handshakes = new HandshakeTracker();
+        var lastTimeoutSweep = DateTime.UtcNow;
 
         try
         {
@@ -274,105 +268,86 @@ internal static class Program
 
                 _panel?.UpdateStats(packetsTotal, packetsModified, discordPackets, _bytesProcessed);
 
-                // Analyze packet
                 var context = PacketInspector.Analyze(packet, addr.Outbound);
 
-                if (!addr.Outbound && context.IsTcp && pendingHellos.Remove(context.DstPort, out _))
+                if (!addr.Outbound)
                 {
-                    if (context.IsRst)
+                    // Only inbound RSTs from port 443 match the filter.
+                    if (context.IsTcp && context.IsRst &&
+                        handshakes.InboundReset(context.DstPort) == HandshakeOutcome.Reset)
                     {
-                        adaptiveEngine.ReportFailure("Connection reset shortly after ClientHello");
+                        adaptiveEngine.ReportFailure("Connection reset after ClientHello");
                     }
-                    // Any other inbound packet on this port means the server responded
-                    // (SYN-ACK/data) -> the handshake is progressing, nothing to report.
+
+                    handle.Send(packet, out _, ref addr);
+                    continue;
                 }
 
-                if (DateTime.UtcNow - lastPendingSweep > pendingSweepInterval)
+                var now = DateTime.UtcNow;
+                if (now - lastTimeoutSweep > TimeSpan.FromSeconds(1))
                 {
-                    lastPendingSweep = DateTime.UtcNow;
-                    var cutoff = DateTime.UtcNow - helloTimeout;
-                    foreach (var stalePort in pendingHellos.Where(p => p.Value < cutoff).Select(p => p.Key).ToList())
+                    lastTimeoutSweep = now;
+                    for (var timedOut = handshakes.TakeTimedOut(now); timedOut > 0; timedOut--)
                     {
-                        pendingHellos.Remove(stalePort);
                         adaptiveEngine.ReportFailure("No response within timeout (possible silent DPI drop)");
                     }
                 }
 
-                var shouldProcess = false;
-                string? sni = null;
-
-                // Check for Discord traffic
-                if (context.IsTcp && context.IsClientHello)
+                if (!context.IsTcp || !TryGetTcpPayload(packet, context.IsIPv6, out var payloadOffset, out var seq)
+                    || payloadOffset >= packet.Length)
                 {
-                    var ipHeaderLen = context.IsIPv6 ? 40 : (packet[0] & 0x0F) * 4;
-                    var tcpHeaderLen = ((packet[ipHeaderLen + 12] >> 4) & 0x0F) * 4;
-                    var payload = packet[(ipHeaderLen + tcpHeaderLen)..];
-
-                    sni = PacketInspector.ExtractSni(payload);
-                    shouldProcess = DiscordFilter.IsDiscordSni(sni);
-
-                    if (shouldProcess)
-                    {
-                        discordPackets++;
-                        _panel?.SetStatus($"TLS -> {sni}");
-
-                        if (_verbose)
-                        {
-                            _panel?.WriteLine($"[Discord] ClientHello -> {sni}");
-                        }
-
-                        _logger?.LogPacket(sni ?? "unknown", adaptiveEngine.CurrentTechnique.ToString(), 0, true);
-                    }
-                }
-                else if (context.IsUdp && DiscordFilter.IsVoicePort(context.DstPort))
-                {
-                    shouldProcess = true;
-                    discordPackets++;
-
-                    if (_verbose)
-                    {
-                        _panel?.WriteLine($"[Discord] UDP Voice -> :{context.DstPort}");
-                    }
+                    handle.Send(packet, out _, ref addr);
+                    continue;
                 }
 
-                if (shouldProcess && addr.Outbound)
+                if (handshakes.OutboundData(context.SrcPort, seq) == HandshakeOutcome.Succeeded)
                 {
-                    if (context.IsClientHello)
-                    {
-                        pendingHellos[context.SrcPort] = DateTime.UtcNow;
-                    }
-
-                    // Apply DPI bypass
-                    var results = engine.ProcessPacket(packet, context);
-
-                    if (_verbose && results.Count > 0)
-                    {
-                        _panel?.WriteLine($"[Bypass] {results.Count} packets, Orig={packet.Length}B, New={results[0].Data.Length}B");
-                    }
-
-                    foreach (var result in results)
-                    {
-                        if (result.DelayMs > 0)
-                            await Task.Delay(result.DelayMs, ct);
-
-                        if (result.RecalcChecksum)
-                        {
-                            WinDivertHandle.CalcChecksums(result.Data, ref addr);
-                        }
-
-                        handle.Send(result.Data, out _, ref addr);
-                    }
-
-                    if (results.Count > 1 || results[0].RecalcChecksum)
-                    {
-                        packetsModified++;
-                        adaptiveEngine.ReportSuccess();
-                    }
+                    adaptiveEngine.ReportSuccess();
                 }
-                else
+
+                var payload = packet[payloadOffset..];
+                var sni = context.IsClientHello ? PacketInspector.ExtractSni(payload) : null;
+                if (!DiscordFilter.IsDiscordSni(sni))
                 {
                     // Pass through unmodified
                     handle.Send(packet, out _, ref addr);
+                    continue;
+                }
+
+                discordPackets++;
+                _panel?.SetStatus($"TLS -> {sni}");
+                if (_verbose)
+                {
+                    _panel?.WriteLine($"[Discord] ClientHello -> {sni}");
+                }
+                _logger?.LogPacket(sni!, adaptiveEngine.CurrentTechnique.ToString(), 0, true);
+
+                handshakes.ClientHelloSent(context.SrcPort, seq, BinaryPrimitives.ReadUInt16BigEndian(payload[3..]), now);
+
+                // Apply DPI bypass
+                var results = engine.ProcessPacket(packet, context);
+
+                if (_verbose && results.Count > 0)
+                {
+                    _panel?.WriteLine($"[Bypass] {results.Count} packets, Orig={packet.Length}B, New={results[0].Data.Length}B");
+                }
+
+                foreach (var result in results)
+                {
+                    if (result.DelayMs > 0)
+                        await Task.Delay(result.DelayMs, ct);
+
+                    if (result.RecalcChecksum)
+                    {
+                        WinDivertHandle.CalcChecksums(result.Data, ref addr);
+                    }
+
+                    handle.Send(result.Data, out _, ref addr);
+                }
+
+                if (results.Count > 1 || results[0].RecalcChecksum)
+                {
+                    packetsModified++;
                 }
             }
         }
@@ -384,6 +359,19 @@ internal static class Program
 
             _logger?.LogStats(packetsTotal, discordPackets, packetsModified, _bytesProcessed);
         }
+    }
+
+    /// <summary>Offset of the TCP payload and the segment's sequence number.</summary>
+    private static bool TryGetTcpPayload(ReadOnlySpan<byte> packet, bool isIPv6, out int payloadOffset, out uint seq)
+    {
+        payloadOffset = 0;
+        seq = 0;
+        var ipHeaderLen = isIPv6 ? 40 : (packet[0] & 0x0F) * 4;
+        if (packet.Length < ipHeaderLen + 20) return false;
+
+        seq = BinaryPrimitives.ReadUInt32BigEndian(packet[(ipHeaderLen + 4)..]);
+        payloadOffset = ipHeaderLen + ((packet[ipHeaderLen + 12] >> 4) & 0x0F) * 4;
+        return payloadOffset <= packet.Length;
     }
 
     internal static void PrintBanner()

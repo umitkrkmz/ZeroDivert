@@ -79,22 +79,4 @@ public class DpiBypassEngine
     {
         OnLog?.Invoke(message);
     }
-
-    /// <summary>
-    /// Creates a default engine with recommended strategies for Discord
-    /// </summary>
-    public static DpiBypassEngine CreateDefault()
-    {
-        var engine = new DpiBypassEngine();
-
-        // TCP strategies
-        engine.AddStrategy(new TcpFragmentationStrategy(fragmentSize: 2));
-        engine.AddStrategy(new DesyncStrategy(DesyncMode.Split, splitPosition: 3));
-        engine.AddStrategy(new FakeTtlStrategy(fakeTtl: 1, realTtl: 64));
-
-        // UDP strategies
-        engine.AddStrategy(new UdpFakeStrategy(fakeCount: 1));
-
-        return engine;
-    }
 }
