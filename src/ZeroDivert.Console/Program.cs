@@ -165,7 +165,7 @@ internal static class Program
         adaptiveEngine.OnLog += msg => WriteInfo($"[Adaptive] {msg}");
         adaptiveEngine.OnTechniqueChanged += t => _panel?.SetTechnique(t.ToString());
 
-        await adaptiveEngine.InitializeAsync();
+        await adaptiveEngine.InitializeAsync(AppStateStore.Load().PinnedTechnique);
 
         if (!noStatus && !verbose)
         {
@@ -262,6 +262,10 @@ internal static class Program
         var handshakes = new HandshakeTracker();
         var lastTimeoutSweep = DateTime.UtcNow;
 
+        // ClientHellos split across TCP segments with the SNI not in the first one:
+        // those connections can't be recognized (see PacketInspector.IsPartialClientHello).
+        long unreadableSni = 0;
+
         try
         {
             while (!ct.IsCancellationRequested)
@@ -333,6 +337,15 @@ internal static class Program
 
                 var payload = packet[payloadOffset..];
                 var sni = context.IsClientHello ? PacketInspector.ExtractSni(payload) : null;
+                if (sni == null && context.IsClientHello && PacketInspector.IsPartialClientHello(payload))
+                {
+                    unreadableSni++;
+                    if (unreadableSni is 1 or 10 or 100 or 1000)
+                    {
+                        WriteInfo($"TLS: SNI'si ilk TCP segmentinde olmayan ClientHello sayısı: {unreadableSni} (bu bağlantılar Discord olarak tanınamıyor)");
+                    }
+                }
+
                 if (!DiscordFilter.IsDiscordSni(sni))
                 {
                     // Pass through unmodified
@@ -388,6 +401,7 @@ internal static class Program
             _handle = null;
 
             _logger?.LogStats(packetsTotal, discordPackets, packetsModified, _bytesProcessed);
+            _logger?.Info($"Split ClientHellos with SNI outside the first segment: {unreadableSni}");
         }
     }
 
@@ -563,6 +577,7 @@ internal static class Program
         const string runOptionsChoice = "Çalışma seçenekleri (-v / --no-log / --no-status)";
         const string dnsChoice = "DNS Ayarları";
         const string autoStartChoice = "Başlangıçta Otomatik Başlat (tepsi simgesi)";
+        const string techniqueChoicePrefix = "Bypass tekniği: ";
         const string backChoice = "◀  Geri";
 
         while (true)
@@ -573,6 +588,7 @@ internal static class Program
             AnsiConsole.WriteLine();
 
             var state = AppStateStore.Load();
+            var techniqueChoice = techniqueChoicePrefix + TechniqueLabel(state.PinnedTechnique);
             var checkForUpdates = state.CheckForUpdates;
             var dnsOverHttps = state.DnsOverHttps;
             var dohChoice = dnsOverHttps
@@ -584,7 +600,7 @@ internal static class Program
 
             var choice = AnsiConsole.Prompt(
                 CreateMenu("Ayarlar")
-                    .AddChoices(runOptionsChoice, dohChoice, dnsChoice, autoStartChoice, updateCheckChoice, backChoice));
+                    .AddChoices(runOptionsChoice, techniqueChoice, dohChoice, dnsChoice, autoStartChoice, updateCheckChoice, backChoice));
 
             switch (choice)
             {
@@ -596,6 +612,9 @@ internal static class Program
                     break;
                 case var c when c == autoStartChoice:
                     RunAutoStartMenu();
+                    break;
+                case var c when c == techniqueChoice:
+                    PromptForTechnique(state.PinnedTechnique);
                     break;
                 case var c when c == dohChoice:
                     // Read when monitoring starts, so it applies from the next Başlat.
@@ -611,6 +630,38 @@ internal static class Program
                     return options;
             }
         }
+    }
+
+    private static readonly (BypassTechnique? Technique, string Label)[] TechniqueChoices =
+    [
+        (null, "Otomatik (önerilen)"),
+        (BypassTechnique.TcpFragmentation, "TCP Fragmentasyon"),
+        (BypassTechnique.TcpDesync, "TCP Desync"),
+        (BypassTechnique.FakeTtl, "Fake TTL"),
+        (BypassTechnique.GoodbyeDpi, "GoodbyeDPI uyumlu")
+    ];
+
+    private static string TechniqueLabel(BypassTechnique? technique) =>
+        TechniqueChoices.FirstOrDefault(c => c.Technique == technique).Label ?? technique.ToString()!;
+
+    private static void PromptForTechnique(BypassTechnique? current)
+    {
+        AnsiConsole.Clear();
+        PrintBanner();
+        AnsiConsole.MarkupLine("[grey]Ayarlar[/] [grey]>[/] [bold]Bypass tekniği[/]");
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("[bold]Otomatik[/]: ZeroDivert teknikleri sırayla dener; Discord bağlantısı art arda başarısız olursa bir sonrakine geçer ve çalışanı hatırlar.");
+        AnsiConsole.MarkupLine("Belirli bir tekniği seçerseniz otomatik geçiş yapılmaz; karşılaştırmalı test için kullanışlıdır.");
+        AnsiConsole.MarkupLine($"Şu an: [green]{Markup.Escape(TechniqueLabel(current))}[/]. Değişiklik bir sonraki [bold]Başlat[/]'ta geçerli olur.");
+        AnsiConsole.WriteLine();
+
+        var labels = TechniqueChoices.Select(c => c.Label).Append("◀  Geri").ToArray();
+        var chosen = AnsiConsole.Prompt(CreateMenu("Bypass tekniği").AddChoices(labels));
+
+        var match = TechniqueChoices.FirstOrDefault(c => c.Label == chosen);
+        if (match.Label == null) return; // Geri
+
+        AppStateStore.Update(s => s.PinnedTechnique = match.Technique);
     }
 
     private static void RunAutoStartMenu()

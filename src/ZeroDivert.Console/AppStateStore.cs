@@ -1,4 +1,5 @@
 using System.Text.Json;
+using ZeroDivert.Core.Config;
 
 namespace ZeroDivert.Console;
 
@@ -22,6 +23,12 @@ public sealed class AppState
     /// Discord typically poison its DNS too, often via the router's IPv6 DNS.
     /// </summary>
     public bool DnsOverHttps { get; set; } = true;
+
+    /// <summary>
+    /// Bypass technique chosen in Ayarlar, or null for automatic calibration and
+    /// rotation (AdaptiveEngine).
+    /// </summary>
+    public BypassTechnique? PinnedTechnique { get; set; }
 }
 
 /// <summary>

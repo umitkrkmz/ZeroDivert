@@ -60,26 +60,29 @@ public class StrategyConfig
     /// Fake TTL settings
     /// </summary>
     public FakeTtlConfig FakeTtl { get; set; } = new();
+
+    /// <summary>
+    /// GoodbyeDPI-compatible technique settings
+    /// </summary>
+    public GoodbyeDpiConfig GoodbyeDpi { get; set; } = new();
 }
+
+// Every field below is read by AdaptiveEngine.CreateStrategy; settings that
+// nothing applied (MaxFragments, UseFakePacket, FakeTtl.Enabled, RealTtl) were
+// removed. Old profile.json files still load: unknown fields are ignored.
 
 public class TcpFragmentConfig
 {
     /// <summary>
     /// Fragment size in bytes (default: 2)
-    /// Smaller = more packets but better bypass
     /// </summary>
     public int FragmentSize { get; set; } = 2;
 
     /// <summary>
-    /// Only fragment first N bytes of payload (0 = all)
-    /// DPI usually only checks first ~100 bytes
+    /// Only the first N bytes of the ClientHello are fragmented; the rest goes in
+    /// one segment. Values below 1 (older profiles stored 0) mean the default 50.
     /// </summary>
-    public int FragmentFirstBytes { get; set; } = 0;
-
-    /// <summary>
-    /// Maximum fragments to create (0 = unlimited)
-    /// </summary>
-    public int MaxFragments { get; set; } = 0;
+    public int FragmentFirstBytes { get; set; } = 50;
 }
 
 public class TcpDesyncConfig
@@ -93,29 +96,28 @@ public class TcpDesyncConfig
     /// Split position in bytes
     /// </summary>
     public int SplitPosition { get; set; } = 3;
-
-    /// <summary>
-    /// Use fake packet with bad checksum
-    /// </summary>
-    public bool UseFakePacket { get; set; } = false;
 }
 
 public class FakeTtlConfig
 {
     /// <summary>
-    /// Enable fake TTL technique
+    /// TTL of the decoy ClientHello: must outlive the home router and reach the
+    /// ISP's DPI, but expire before the server. Values below 2 mean the default 5.
     /// </summary>
-    public bool Enabled { get; set; } = false;
+    public byte FakeTtl { get; set; } = 5;
+}
+
+public class GoodbyeDpiConfig
+{
+    /// <summary>
+    /// TTL of the decoy ClientHello (GoodbyeDPI-Turkey: --set-ttl 5).
+    /// </summary>
+    public byte FakeTtl { get; set; } = 5;
 
     /// <summary>
-    /// TTL for fake packets (should expire before server)
+    /// The real ClientHello is split once, after this many bytes (GoodbyeDPI -e 2).
     /// </summary>
-    public byte FakeTtl { get; set; } = 1;
-
-    /// <summary>
-    /// TTL for real packets
-    /// </summary>
-    public byte RealTtl { get; set; } = 64;
+    public int FragmentSize { get; set; } = 2;
 }
 
 public class TestResult
@@ -134,7 +136,16 @@ public enum BypassTechnique
     TcpFragmentation,
     TcpDesync,
     FakeTtl,
-    Combined
+
+    /// <summary>
+    /// No longer used: it never combined anything and behaved exactly like
+    /// TcpFragmentation, which saved profiles using it now map to. Kept so those
+    /// profiles still deserialize.
+    /// </summary>
+    Combined,
+
+    /// <summary>GoodbyeDPI-Turkey's technique, Discord-only (see GoodbyeDpiStrategy).</summary>
+    GoodbyeDpi
 }
 
 /// <summary>
@@ -143,6 +154,7 @@ public enum BypassTechnique
 public class ProfileManager
 {
     private readonly string _profilePath;
+    private readonly SemaphoreSlim _updateGate = new(1, 1);
     private BypassProfile? _currentProfile;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -202,7 +214,28 @@ public class ProfileManager
         await File.WriteAllTextAsync(_profilePath, json);
     }
 
+    /// <summary>
+    /// Records one handshake result. Callers fire and forget it, so updates are
+    /// serialized (two writes to profile.json at once would race) and a failed
+    /// write is swallowed: losing one history entry beats an unobserved exception.
+    /// </summary>
     public async Task UpdateStrategyAsync(BypassTechnique technique, bool success, int latencyMs = 0, string? error = null)
+    {
+        await _updateGate.WaitAsync();
+        try
+        {
+            await UpdateStrategyCoreAsync(technique, success, latencyMs, error);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+        finally
+        {
+            _updateGate.Release();
+        }
+    }
+
+    private async Task UpdateStrategyCoreAsync(BypassTechnique technique, bool success, int latencyMs, string? error)
     {
         if (_currentProfile == null) return;
 
@@ -220,18 +253,22 @@ public class ProfileManager
             _currentProfile.TestHistory.RemoveRange(0, _currentProfile.TestHistory.Count - 100);
         }
 
-        // Update success rate
-        var recentTests = _currentProfile.TestHistory.TakeLast(20).ToList();
-        if (recentTests.Count > 0)
-        {
-            _currentProfile.SuccessRate = (int)(recentTests.Count(t => t.Success) * 100.0 / recentTests.Count);
-        }
-
         if (success)
         {
             _currentProfile.Strategy.Technique = technique;
             _currentProfile.IsVerified = true;
             _currentProfile.LastTested = DateTime.UtcNow;
+        }
+
+        // Success rate of the profile's own technique: failures of techniques tried
+        // earlier during calibration must not drag down the one that works.
+        var recentTests = _currentProfile.TestHistory
+            .Where(t => t.Technique == _currentProfile.Strategy.Technique)
+            .TakeLast(20)
+            .ToList();
+        if (recentTests.Count > 0)
+        {
+            _currentProfile.SuccessRate = (int)(recentTests.Count(t => t.Success) * 100.0 / recentTests.Count);
         }
 
         await SaveAsync();
