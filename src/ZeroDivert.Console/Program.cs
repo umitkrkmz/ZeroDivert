@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using Spectre.Console;
 using Color = Spectre.Console.Color;
@@ -5,6 +7,7 @@ using ZeroDivert.Core.Adaptive;
 using ZeroDivert.Core.Bypass;
 using ZeroDivert.Core.Config;
 using ZeroDivert.Core.Detection;
+using ZeroDivert.Core.Dns;
 using ZeroDivert.Core.Filters;
 using ZeroDivert.Core.Logging;
 using ZeroDivert.Driver;
@@ -163,7 +166,7 @@ internal static class Program
         adaptiveEngine.OnLog += msg => WriteInfo($"[Adaptive] {msg}");
         adaptiveEngine.OnTechniqueChanged += t => _panel?.SetTechnique(t.ToString());
 
-        await adaptiveEngine.InitializeAsync();
+        await adaptiveEngine.InitializeAsync(AppStateStore.Load().PinnedTechnique);
 
         if (!noStatus && !verbose)
         {
@@ -198,7 +201,17 @@ internal static class Program
 
     private static async Task RunAsync(AdaptiveEngine adaptiveEngine, CancellationToken ct)
     {
-        var filter = DiscordFilter.GenerateFilter();
+        // Answer every app's plain DNS over DoH while monitoring (see DnsInterceptor).
+        using var dnsInterceptor = AppStateStore.Load().DnsOverHttps
+            ? new DnsInterceptor(DoHClient.DefaultServerUrl)
+            : null;
+        if (dnsInterceptor != null)
+        {
+            dnsInterceptor.OnLog += WriteInfo;
+            WriteInfo($"DNS: tüm uygulamaların DNS sorguları DoH ile cevaplanıyor ({DoHClient.DefaultServerUrl})");
+        }
+
+        var filter = DiscordFilter.GenerateFilter(interceptDns: dnsInterceptor != null);
         WriteInfo($"Filter: {filter}");
 
         _handle = WinDivertHandle.Open(filter, WinDivertLayer.Network, 0, WinDivertFlag.None);
@@ -244,18 +257,15 @@ internal static class Program
         long packetsModified = 0;
         long discordPackets = 0;
 
-        // Tracks Discord ClientHellos we've sent (by local port) that haven't been
-        // confirmed yet, so the outcome can be attributed to the technique currently
-        // in use and reported back to the adaptive engine. An entry is cleared by:
-        //   - an inbound RST on that port -> explicit failure (DPI reset the connection)
-        //   - any other inbound packet on that port -> the server responded, treat as OK
-        //   - no inbound packet at all before helloTimeout -> silent failure (DPI is
-        //     blackholing the packets rather than sending a RST, which a pure
-        //     RST-based check would never notice)
-        var pendingHellos = new Dictionary<ushort, DateTime>();
-        var helloTimeout = TimeSpan.FromSeconds(6);
-        var lastPendingSweep = DateTime.UtcNow;
-        var pendingSweepInterval = TimeSpan.FromSeconds(1);
+        // Judges each Discord handshake from what the filter actually captures (our
+        // outbound packets + inbound RSTs) and reports the outcome to the adaptive
+        // engine, which rotates techniques on repeated failures.
+        var handshakes = new HandshakeTracker();
+        var lastTimeoutSweep = DateTime.UtcNow;
+
+        // ClientHellos split across TCP segments with the SNI not in the first one:
+        // those connections can't be recognized (see PacketInspector.IsPartialClientHello).
+        long unreadableSni = 0;
 
         try
         {
@@ -273,123 +283,184 @@ internal static class Program
                 Interlocked.Add(ref _bytesProcessed, recvLen);
 
                 _panel?.UpdateStats(packetsTotal, packetsModified, discordPackets, _bytesProcessed);
+                _panel?.UpdateDns(dnsInterceptor != null, dnsInterceptor?.AnsweredViaDoH ?? 0, dnsInterceptor?.FellBackToPlainDns ?? 0);
 
-                // Analyze packet
                 var context = PacketInspector.Analyze(packet, addr.Outbound);
 
-                if (!addr.Outbound && context.IsTcp && pendingHellos.Remove(context.DstPort, out _))
+                if (context.IsUdp)
                 {
-                    if (context.IsRst)
+                    // Only outbound DNS queries match the filter's UDP clause. The
+                    // interceptor answers asynchronously, so the loop never waits on DoH.
+                    var queryAddr = addr;
+                    if (dnsInterceptor?.TryIntercept(packet, addr.Outbound,
+                            (bytes, asInboundReply) => InjectFromAnyThread(bytes, queryAddr, asInboundReply)) != true)
                     {
-                        adaptiveEngine.ReportFailure("Connection reset shortly after ClientHello");
+                        handle.Send(packet, out _, ref addr);
                     }
-                    // Any other inbound packet on this port means the server responded
-                    // (SYN-ACK/data) -> the handshake is progressing, nothing to report.
+
+                    continue;
                 }
 
-                if (DateTime.UtcNow - lastPendingSweep > pendingSweepInterval)
+                if (!addr.Outbound)
                 {
-                    lastPendingSweep = DateTime.UtcNow;
-                    var cutoff = DateTime.UtcNow - helloTimeout;
-                    foreach (var stalePort in pendingHellos.Where(p => p.Value < cutoff).Select(p => p.Key).ToList())
+                    // Only inbound RSTs from port 443 match the filter.
+                    if (context.IsTcp && context.IsRst &&
+                        handshakes.InboundReset(context.DstPort) == HandshakeOutcome.Reset)
                     {
-                        pendingHellos.Remove(stalePort);
+                        adaptiveEngine.ReportFailure("Connection reset after ClientHello");
+                    }
+
+                    handle.Send(packet, out _, ref addr);
+                    continue;
+                }
+
+                var now = DateTime.UtcNow;
+                if (now - lastTimeoutSweep > TimeSpan.FromSeconds(1))
+                {
+                    lastTimeoutSweep = now;
+                    for (var timedOut = handshakes.TakeTimedOut(now); timedOut > 0; timedOut--)
+                    {
                         adaptiveEngine.ReportFailure("No response within timeout (possible silent DPI drop)");
                     }
                 }
 
-                var shouldProcess = false;
-                string? sni = null;
-
-                // Check for Discord traffic
-                if (context.IsTcp && context.IsClientHello)
+                if (!context.IsTcp || !TryGetTcpPayload(packet, context.IsIPv6, out var payloadOffset, out var seq)
+                    || payloadOffset >= packet.Length)
                 {
-                    var ipHeaderLen = context.IsIPv6 ? 40 : (packet[0] & 0x0F) * 4;
-                    var tcpHeaderLen = ((packet[ipHeaderLen + 12] >> 4) & 0x0F) * 4;
-                    var payload = packet[(ipHeaderLen + tcpHeaderLen)..];
-
-                    sni = PacketInspector.ExtractSni(payload);
-                    shouldProcess = DiscordFilter.IsDiscordSni(sni);
-
-                    if (shouldProcess)
-                    {
-                        discordPackets++;
-                        _panel?.SetStatus($"TLS -> {sni}");
-
-                        if (_verbose)
-                        {
-                            _panel?.WriteLine($"[Discord] ClientHello -> {sni}");
-                        }
-
-                        _logger?.LogPacket(sni ?? "unknown", adaptiveEngine.CurrentTechnique.ToString(), 0, true);
-                    }
+                    handle.Send(packet, out _, ref addr);
+                    continue;
                 }
-                else if (context.IsUdp && DiscordFilter.IsVoicePort(context.DstPort))
-                {
-                    shouldProcess = true;
-                    discordPackets++;
 
-                    if (_verbose)
+                if (handshakes.OutboundData(context.SrcPort, seq) == HandshakeOutcome.Succeeded)
+                {
+                    adaptiveEngine.ReportSuccess();
+                }
+
+                var payload = packet[payloadOffset..];
+                var sni = context.IsClientHello ? PacketInspector.ExtractSni(payload) : null;
+                if (sni == null && context.IsClientHello && PacketInspector.IsPartialClientHello(payload))
+                {
+                    unreadableSni++;
+                    if (unreadableSni is 1 or 10 or 100 or 1000)
                     {
-                        _panel?.WriteLine($"[Discord] UDP Voice -> :{context.DstPort}");
+                        WriteInfo($"TLS: SNI'si ilk TCP segmentinde olmayan ClientHello sayısı: {unreadableSni} (bu bağlantılar Discord olarak tanınamıyor)");
                     }
                 }
 
-                if (shouldProcess && addr.Outbound)
-                {
-                    if (context.IsClientHello)
-                    {
-                        pendingHellos[context.SrcPort] = DateTime.UtcNow;
-                    }
-
-                    // Apply DPI bypass
-                    var results = engine.ProcessPacket(packet, context);
-
-                    if (_verbose && results.Count > 0)
-                    {
-                        _panel?.WriteLine($"[Bypass] {results.Count} packets, Orig={packet.Length}B, New={results[0].Data.Length}B");
-                    }
-
-                    foreach (var result in results)
-                    {
-                        if (result.DelayMs > 0)
-                            await Task.Delay(result.DelayMs, ct);
-
-                        if (result.RecalcChecksum)
-                        {
-                            WinDivertHandle.CalcChecksums(result.Data, ref addr);
-                        }
-
-                        handle.Send(result.Data, out _, ref addr);
-                    }
-
-                    if (results.Count > 1 || results[0].RecalcChecksum)
-                    {
-                        packetsModified++;
-                        adaptiveEngine.ReportSuccess();
-                    }
-                }
-                else
+                if (!DiscordFilter.IsDiscordSni(sni))
                 {
                     // Pass through unmodified
                     handle.Send(packet, out _, ref addr);
+                    continue;
+                }
+
+                discordPackets++;
+                _panel?.SetStatus($"TLS -> {sni}");
+                if (_verbose)
+                {
+                    _panel?.WriteLine($"[Discord] ClientHello -> {sni}");
+                }
+                _logger?.LogPacket(sni!, adaptiveEngine.CurrentTechnique.ToString(), 0, true);
+
+                handshakes.ClientHelloSent(context.SrcPort, seq, BinaryPrimitives.ReadUInt16BigEndian(payload[3..]), now);
+
+                // Apply DPI bypass
+                var results = engine.ProcessPacket(packet, context);
+
+                if (_verbose && results.Count > 0)
+                {
+                    _panel?.WriteLine($"[Bypass] {results.Count} packets, Orig={packet.Length}B, New={results[0].Data.Length}B");
+                }
+
+                foreach (var result in results)
+                {
+                    if (result.DelayMs > 0)
+                        await Task.Delay(result.DelayMs, ct);
+
+                    if (result.RecalcChecksum)
+                    {
+                        WinDivertHandle.CalcChecksums(result.Data, ref addr);
+                    }
+
+                    handle.Send(result.Data, out _, ref addr);
+                }
+
+                if (results.Count > 1 || results[0].RecalcChecksum)
+                {
+                    packetsModified++;
                 }
             }
         }
         finally
         {
+            // First, so DoH answers still in flight are dropped rather than sent
+            // through a handle that is about to close.
+            dnsInterceptor?.Dispose();
+
             statsTimer.Stop();
             handle.Shutdown();
             _handle = null;
 
             _logger?.LogStats(packetsTotal, discordPackets, packetsModified, _bytesProcessed);
+            _logger?.Info($"Split ClientHellos with SNI outside the first segment: {unreadableSni}");
         }
+    }
+
+    /// <summary>
+    /// Sends a packet built off the capture thread (a DoH answer, or the original DNS
+    /// query when DoH failed). <paramref name="addr"/> is a copy of the query's own
+    /// address; a reply keeps its interface indexes but is marked inbound, the same
+    /// way WinDivert's netfilter sample injects replies.
+    /// </summary>
+    private static void InjectFromAnyThread(byte[] packet, WinDivertAddress addr, bool asInboundReply)
+    {
+        var handle = _handle;
+        if (handle == null) return;
+
+        if (asInboundReply)
+        {
+            addr.Outbound = false;
+        }
+
+        try
+        {
+            WinDivertHandle.CalcChecksums(packet, ref addr);
+            handle.Send(packet, out _, ref addr);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Monitoring stopped while the answer was in flight; nothing to send through.
+        }
+    }
+
+    /// <summary>Offset of the TCP payload and the segment's sequence number.</summary>
+    private static bool TryGetTcpPayload(ReadOnlySpan<byte> packet, bool isIPv6, out int payloadOffset, out uint seq)
+    {
+        payloadOffset = 0;
+        seq = 0;
+        var ipHeaderLen = isIPv6 ? 40 : (packet[0] & 0x0F) * 4;
+        if (packet.Length < ipHeaderLen + 20) return false;
+
+        seq = BinaryPrimitives.ReadUInt32BigEndian(packet[(ipHeaderLen + 4)..]);
+        payloadOffset = ipHeaderLen + ((packet[ipHeaderLen + 12] >> 4) & 0x0F) * 4;
+        return payloadOffset <= packet.Length;
     }
 
     internal static void PrintBanner()
     {
         AnsiConsole.Write(new FigletText("ZeroDivert").Centered().Color(Color.Cyan1));
         AnsiConsole.Write(new Rule($"[grey]Discord DPI Bypass Tool {AppInfo.VersionText}[/]").Centered());
+        AnsiConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// One-line header for sub-screens. The Figlet banner is 6 lines; repeating it
+    /// above a table and a menu pushed screens like DNS past the 30 rows of a default
+    /// console window, scrolling the top out of view.
+    /// </summary>
+    private static void PrintHeader()
+    {
+        AnsiConsole.Write(new Rule($"[cyan1]ZeroDivert[/] [grey]{AppInfo.VersionText}[/]").LeftJustified());
         AnsiConsole.WriteLine();
     }
 
@@ -463,7 +534,7 @@ internal static class Program
         while (true)
         {
             AnsiConsole.Clear();
-            PrintBanner();
+            PrintHeader();
             AnsiConsole.MarkupLine("[grey]Hakkında[/]");
             AnsiConsole.WriteLine();
 
@@ -518,23 +589,30 @@ internal static class Program
         const string runOptionsChoice = "Çalışma seçenekleri (-v / --no-log / --no-status)";
         const string dnsChoice = "DNS Ayarları";
         const string autoStartChoice = "Başlangıçta Otomatik Başlat (tepsi simgesi)";
+        const string techniqueChoicePrefix = "Bypass tekniği: ";
         const string backChoice = "◀  Geri";
 
         while (true)
         {
             AnsiConsole.Clear();
-            PrintBanner();
+            PrintHeader();
             AnsiConsole.MarkupLine("[grey]Ayarlar[/]");
             AnsiConsole.WriteLine();
 
-            var checkForUpdates = AppStateStore.Load().CheckForUpdates;
+            var state = AppStateStore.Load();
+            var techniqueChoice = techniqueChoicePrefix + TechniqueLabel(state.PinnedTechnique);
+            var checkForUpdates = state.CheckForUpdates;
+            var dnsOverHttps = state.DnsOverHttps;
+            var dohChoice = dnsOverHttps
+                ? "DNS koruması (DoH): Açık (kapatmak için seçin)"
+                : "DNS koruması (DoH): Kapalı (açmak için seçin)";
             var updateCheckChoice = checkForUpdates
                 ? "Güncelleme kontrolü: Açık (kapatmak için seçin)"
                 : "Güncelleme kontrolü: Kapalı (açmak için seçin)";
 
             var choice = AnsiConsole.Prompt(
                 CreateMenu("Ayarlar")
-                    .AddChoices(runOptionsChoice, dnsChoice, autoStartChoice, updateCheckChoice, backChoice));
+                    .AddChoices(runOptionsChoice, techniqueChoice, dohChoice, dnsChoice, autoStartChoice, updateCheckChoice, backChoice));
 
             switch (choice)
             {
@@ -546,6 +624,13 @@ internal static class Program
                     break;
                 case var c when c == autoStartChoice:
                     RunAutoStartMenu();
+                    break;
+                case var c when c == techniqueChoice:
+                    PromptForTechnique(state.PinnedTechnique);
+                    break;
+                case var c when c == dohChoice:
+                    // Read when monitoring starts, so it applies from the next Başlat.
+                    AppStateStore.Update(s => s.DnsOverHttps = !dnsOverHttps);
                     break;
                 case var c when c == updateCheckChoice:
                     AppStateStore.Update(s => s.CheckForUpdates = !checkForUpdates);
@@ -559,6 +644,38 @@ internal static class Program
         }
     }
 
+    private static readonly (BypassTechnique? Technique, string Label)[] TechniqueChoices =
+    [
+        (null, "Otomatik (önerilen)"),
+        (BypassTechnique.TcpFragmentation, "TCP Fragmentasyon"),
+        (BypassTechnique.TcpDesync, "TCP Desync"),
+        (BypassTechnique.FakeTtl, "Fake TTL"),
+        (BypassTechnique.GoodbyeDpi, "GoodbyeDPI uyumlu")
+    ];
+
+    private static string TechniqueLabel(BypassTechnique? technique) =>
+        TechniqueChoices.FirstOrDefault(c => c.Technique == technique).Label ?? technique.ToString()!;
+
+    private static void PromptForTechnique(BypassTechnique? current)
+    {
+        AnsiConsole.Clear();
+        PrintHeader();
+        AnsiConsole.MarkupLine("[grey]Ayarlar[/] [grey]>[/] [bold]Bypass tekniği[/]");
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("[bold]Otomatik[/]: ZeroDivert teknikleri sırayla dener; Discord bağlantısı art arda başarısız olursa bir sonrakine geçer ve çalışanı hatırlar.");
+        AnsiConsole.MarkupLine("Belirli bir tekniği seçerseniz otomatik geçiş yapılmaz; karşılaştırmalı test için kullanışlıdır.");
+        AnsiConsole.MarkupLine($"Şu an: [green]{Markup.Escape(TechniqueLabel(current))}[/]. Değişiklik bir sonraki [bold]Başlat[/]'ta geçerli olur.");
+        AnsiConsole.WriteLine();
+
+        var labels = TechniqueChoices.Select(c => c.Label).Append("◀  Geri").ToArray();
+        var chosen = AnsiConsole.Prompt(CreateMenu("Bypass tekniği").AddChoices(labels));
+
+        var match = TechniqueChoices.FirstOrDefault(c => c.Label == chosen);
+        if (match.Label == null) return; // Geri
+
+        AppStateStore.Update(s => s.PinnedTechnique = match.Technique);
+    }
+
     private static void RunAutoStartMenu()
     {
         const string installChoice = "Kur (Windows'a giriş yapınca otomatik başlat)";
@@ -568,7 +685,7 @@ internal static class Program
         while (true)
         {
             AnsiConsole.Clear();
-            PrintBanner();
+            PrintHeader();
             AnsiConsole.MarkupLine("[grey]Ayarlar[/] [grey]>[/] [bold]Başlangıçta Otomatik Başlat[/]");
             AnsiConsole.WriteLine();
             AnsiConsole.MarkupLine(
@@ -607,7 +724,7 @@ internal static class Program
         while (true)
         {
             AnsiConsole.Clear();
-            PrintBanner();
+            PrintHeader();
             AnsiConsole.MarkupLine("[grey]Ayarlar[/] [grey]>[/] [bold]DNS[/]");
             AnsiConsole.WriteLine();
 
@@ -620,86 +737,180 @@ internal static class Program
                 return;
             }
 
-            var table = new Table().Border(TableBorder.Rounded);
-            table.AddColumn("Adaptör");
-            table.AddColumn("DNS Kaynağı");
-            table.AddColumn("DNS Sunucuları");
-            foreach (var adapter in adapters)
-            {
-                table.AddRow(
-                    Markup.Escape(adapter.Name),
-                    adapter.IsDhcp ? "[grey]Otomatik (DHCP)[/]" : "[yellow]El ile[/]",
-                    adapter.DnsServers.Count > 0 ? Markup.Escape(string.Join(", ", adapter.DnsServers)) : "[grey]-[/]");
-            }
-            AnsiConsole.Write(table);
-            AnsiConsole.WriteLine();
+            WriteDnsTable(adapters);
+            WriteDnsWarnings(adapters);
 
             var adapterChoices = adapters.Select(a => a.Name).Append(backChoice).ToArray();
-            var selectedAdapter = AnsiConsole.Prompt(
-                CreateMenu("DNS Ayarları")
-                    .AddChoices(adapterChoices));
+            var selectedName = AnsiConsole.Prompt(CreateMenu("DNS Ayarları").AddChoices(adapterChoices));
+            if (selectedName == backChoice) return;
+            var adapter = adapters.First(a => a.Name == selectedName);
 
-            if (selectedAdapter == backChoice) return;
-
-            const string cloudflareChoice = "Cloudflare (1.1.1.1 / 1.0.0.1)";
-            const string googleChoice = "Google (8.8.8.8 / 8.8.4.4)";
+            var cloudflareChoice = PresetLabel(DnsSettingsManager.Cloudflare, adapter);
+            var googleChoice = PresetLabel(DnsSettingsManager.Google, adapter);
             const string customChoice = "Özel DNS gir";
-            const string dhcpChoice = "Otomatik (DHCP) - varsayılana dön";
+            const string dhcpChoice = "Otomatik (DHCP) - varsayılana dön (IPv4 ve IPv6)";
 
             var dnsChoice = AnsiConsole.Prompt(
-                CreateMenu($"{Markup.Escape(selectedAdapter)} için DNS seçin")
+                CreateMenu($"{Markup.Escape(adapter.Name)} için DNS seçin")
                     .AddChoices(cloudflareChoice, googleChoice, customChoice, dhcpChoice, backChoice));
 
-            (bool ok, string message) result;
-            switch (dnsChoice)
+            DnsApplyResult result;
+            if (dnsChoice == cloudflareChoice) result = DnsSettingsManager.Apply(adapter, DnsSettingsManager.Cloudflare);
+            else if (dnsChoice == googleChoice) result = DnsSettingsManager.Apply(adapter, DnsSettingsManager.Google);
+            else if (dnsChoice == customChoice) result = DnsSettingsManager.Apply(adapter, PromptCustomDns(adapter));
+            else if (dnsChoice == dhcpChoice) result = DnsSettingsManager.ResetToDhcp(adapter);
+            else continue;
+
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine(result.Success
+                ? $"[green]{Markup.Escape(result.Message)}[/]"
+                : $"[red]Hata: {Markup.Escape(result.Message)}[/]");
+            foreach (var warning in result.Warnings)
             {
-                case cloudflareChoice:
-                    result = DnsSettingsManager.SetDns(selectedAdapter, "1.1.1.1", "1.0.0.1");
-                    break;
-                case googleChoice:
-                    result = DnsSettingsManager.SetDns(selectedAdapter, "8.8.8.8", "8.8.4.4");
-                    break;
-                case customChoice:
-                    var (primary, secondary) = PromptCustomDns();
-                    result = DnsSettingsManager.SetDns(selectedAdapter, primary, secondary);
-                    break;
-                case dhcpChoice:
-                    result = DnsSettingsManager.ResetToDhcp(selectedAdapter);
-                    break;
-                default:
-                    continue;
+                AnsiConsole.MarkupLine($"[yellow]{Markup.Escape(warning)}[/]");
             }
 
-            AnsiConsole.MarkupLine(result.ok
-                ? $"[green]{Markup.Escape(result.message)}[/]"
-                : $"[red]Hata: {Markup.Escape(result.message)}[/]");
+            if (result.Success)
+            {
+                VerifyDns(adapter, offerRevert: dnsChoice != dhcpChoice);
+            }
+
             AnsiConsole.MarkupLine("[grey]Devam etmek için bir tuşa basın...[/]");
             System.Console.ReadKey(true);
         }
     }
 
-    private static (string primary, string? secondary) PromptCustomDns()
+    private static string PresetLabel(DnsPreset preset, NetworkAdapterInfo adapter)
     {
-        var primary = AnsiConsole.Prompt(
-            new TextPrompt<string>("Birincil DNS adresi:")
-                .Validate(v => System.Net.IPAddress.TryParse(v, out _)
-                    ? ValidationResult.Success()
-                    : ValidationResult.Error("[red]Geçersiz IP adresi[/]")));
+        var addresses = string.Join(" / ", preset.Ipv4);
+        if (adapter.SupportsIPv6) addresses += " + IPv6";
+        var encrypted = DnsSettingsManager.SupportsEncryptedDns ? ", şifreli" : "";
+        return $"{preset.Name} ({addresses}{encrypted})";
+    }
 
-        var secondary = AnsiConsole.Prompt(
-            new TextPrompt<string>("İkincil DNS adresi (opsiyonel, boş bırakabilirsiniz):")
+    private static void WriteDnsTable(IReadOnlyList<NetworkAdapterInfo> adapters)
+    {
+        var table = new Table().Border(TableBorder.Rounded);
+        table.AddColumn("Adaptör");
+        table.AddColumn("DNS Kaynağı");
+        table.AddColumn("IPv4 DNS");
+        table.AddColumn("IPv6 DNS");
+        foreach (var adapter in adapters)
+        {
+            table.AddRow(
+                Markup.Escape(adapter.Name),
+                adapter.IsDhcp ? "[grey]Otomatik (DHCP)[/]" : "[yellow]El ile[/]",
+                AddressCell(adapter.Ipv4Dns),
+                adapter.SupportsIPv6 ? AddressCell(adapter.Ipv6Dns) : "[grey]IPv6 kapalı[/]");
+        }
+
+        AnsiConsole.Write(table);
+        AnsiConsole.WriteLine();
+    }
+
+    private static string AddressCell(IReadOnlyList<string> addresses) =>
+        addresses.Count > 0 ? Markup.Escape(string.Join("\n", addresses)) : "[grey]-[/]";
+
+    private static void WriteDnsWarnings(IReadOnlyList<NetworkAdapterInfo> adapters)
+    {
+        var dnsProtection = AppStateStore.Load().DnsOverHttps;
+        if (!dnsProtection && adapters.Any(a => a.Ipv6Dns.Count > 0))
+        {
+            AnsiConsole.MarkupLine("[yellow]IPv6 DNS sunucusu olan bir bağdaştırıcı var ve DNS koruması (DoH) kapalı: DNS sorguları bu yoldan İSS'ye gidip değiştirilebilir. Ayarlar'dan DNS korumasını açmanız önerilir.[/]");
+        }
+
+        if (!DnsSettingsManager.SupportsEncryptedDns)
+        {
+            AnsiConsole.MarkupLine("[yellow]Windows 10'da şifreli DNS yok: burada ayarlanan sunuculara sorgular düz metin gider. Düz DNS'in engellendiği hatlarda ZeroDivert'in DNS korumasını (DoH) açık tutun.[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine("[grey]Not: Windows 11'de Ayarlar > Ağ ve İnternet > Wi-Fi altındaki \"Tüm Wi-Fi ağlarının DNS ayarları\" tanımlıysa, burada görünen ağ başına ayardan önce o kullanılır. Ayarı uyguladıktan sonra yapılan test, Windows'un gerçekte ne kullandığını gösterir.[/]");
+        }
+
+        AnsiConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// After a change: show what the adapter now reports, then resolve a name the
+    /// way apps do. If that fails, offer to go back to DHCP so the user isn't left
+    /// without DNS.
+    /// </summary>
+    private static void VerifyDns(NetworkAdapterInfo adapter, bool offerRevert)
+    {
+        var updated = DnsSettingsManager.ListAdapters().FirstOrDefault(a => a.Name == adapter.Name) ?? adapter;
+        AnsiConsole.MarkupLine($"Bağdaştırıcının bildirdiği DNS: IPv4 [bold]{Markup.Escape(string.Join(", ", updated.Ipv4Dns.DefaultIfEmpty("-")))}[/], IPv6 [bold]{Markup.Escape(string.Join(", ", updated.Ipv6Dns.DefaultIfEmpty("-")))}[/]");
+
+        var check = AnsiConsole.Status().Start(
+            $"{DnsSettingsManager.TestName} çözümleniyor...",
+            _ => DnsSettingsManager.CheckResolutionAsync().GetAwaiter().GetResult());
+
+        if (!check.Succeeded)
+        {
+            AnsiConsole.MarkupLine($"[red]{DnsSettingsManager.TestName} çözümlenemedi: yeni DNS sunucusuna ulaşılamıyor olabilir. Bu haliyle internet çalışmayabilir.[/]");
+            if (!offerRevert) return;
+
+            const string revert = "Otomatik (DHCP)'ye geri dön (önerilen)";
+            const string keep = "Böyle kalsın";
+            if (AnsiConsole.Prompt(CreateMenu("Ne yapalım?").AddChoices(revert, keep)) == revert)
+            {
+                var reverted = DnsSettingsManager.ResetToDhcp(adapter);
+                AnsiConsole.MarkupLine(reverted.Success
+                    ? $"[green]{Markup.Escape(reverted.Message)}[/]"
+                    : $"[red]Hata: {Markup.Escape(reverted.Message)}[/]");
+            }
+
+            return;
+        }
+
+        var answer = string.Join(", ", check.SystemAddresses.Take(3));
+        if (check.MatchesDoH == false)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Windows {DnsSettingsManager.TestName} için {Markup.Escape(answer)} döndürdü, ama bu DoH ile alınan cevaptan farklı: DNS hâlâ İSS tarafından değiştiriliyor olabilir (ör. IPv6 DNS veya \"Tüm Wi-Fi ağlarının DNS ayarları\"). ZeroDivert'in DNS koruması (DoH) bunu izleme sırasında düzeltir.[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine($"[green]Test başarılı: {DnsSettingsManager.TestName} → {Markup.Escape(answer)}[/]");
+        }
+    }
+
+    private static DnsPreset PromptCustomDns(NetworkAdapterInfo adapter)
+    {
+        var ipv4 = new List<string> { PromptAddress("Birincil IPv4 DNS adresi:", AddressFamily.InterNetwork, optional: false)! };
+        if (PromptAddress("İkincil IPv4 DNS adresi (opsiyonel):", AddressFamily.InterNetwork, optional: true) is { } v4b)
+            ipv4.Add(v4b);
+
+        var ipv6 = new List<string>();
+        if (adapter.SupportsIPv6 &&
+            PromptAddress("Birincil IPv6 DNS adresi (opsiyonel):", AddressFamily.InterNetworkV6, optional: true) is { } v6a)
+        {
+            ipv6.Add(v6a);
+            if (PromptAddress("İkincil IPv6 DNS adresi (opsiyonel):", AddressFamily.InterNetworkV6, optional: true) is { } v6b)
+                ipv6.Add(v6b);
+        }
+
+        return new DnsPreset("Özel", [.. ipv4], [.. ipv6], DohTemplate: null);
+    }
+
+    private static string? PromptAddress(string prompt, AddressFamily family, bool optional)
+    {
+        var familyName = family == AddressFamily.InterNetwork ? "IPv4" : "IPv6";
+        var value = AnsiConsole.Prompt(
+            new TextPrompt<string>(prompt)
                 .AllowEmpty()
-                .Validate(v => string.IsNullOrWhiteSpace(v) || System.Net.IPAddress.TryParse(v, out _)
-                    ? ValidationResult.Success()
-                    : ValidationResult.Error("[red]Geçersiz IP adresi[/]")));
+                .Validate(v =>
+                    (optional && string.IsNullOrWhiteSpace(v)) ||
+                    (System.Net.IPAddress.TryParse(v, out var ip) && ip.AddressFamily == family)
+                        ? ValidationResult.Success()
+                        : ValidationResult.Error($"[red]Geçerli bir {familyName} adresi girin[/]")));
 
-        return (primary, string.IsNullOrWhiteSpace(secondary) ? null : secondary);
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
     private static void ShowInfoScreen()
     {
         AnsiConsole.Clear();
-        PrintBanner();
+        PrintHeader();
         AnsiConsole.MarkupLine("[grey]Log ve Profil Bilgisi[/]");
         AnsiConsole.WriteLine();
 

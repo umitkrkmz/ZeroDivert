@@ -1,4 +1,5 @@
 using System.Text.Json;
+using ZeroDivert.Core.Config;
 
 namespace ZeroDivert.Console;
 
@@ -15,6 +16,19 @@ public sealed class AppState
     /// Whether to look up the latest GitHub release on startup (see UpdateChecker).
     /// </summary>
     public bool CheckForUpdates { get; set; } = true;
+
+    /// <summary>
+    /// While monitoring, answer every app's plain DNS queries (UDP 53, IPv4 and IPv6)
+    /// over DNS-over-HTTPS (see DnsInterceptor). On by default: ISPs that block
+    /// Discord typically poison its DNS too, often via the router's IPv6 DNS.
+    /// </summary>
+    public bool DnsOverHttps { get; set; } = true;
+
+    /// <summary>
+    /// Bypass technique chosen in Ayarlar, or null for automatic calibration and
+    /// rotation (AdaptiveEngine).
+    /// </summary>
+    public BypassTechnique? PinnedTechnique { get; set; }
 }
 
 /// <summary>

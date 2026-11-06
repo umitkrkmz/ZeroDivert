@@ -14,4 +14,9 @@
       <Platform Solution="*|x64" Project="x64" />
     </Project>
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ZeroDivert.Tests/ZeroDivert.Tests.csproj">
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+  </Folder>
 </Solution>

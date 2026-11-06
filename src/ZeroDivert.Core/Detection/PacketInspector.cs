@@ -138,6 +138,18 @@ public static class PacketInspector
     }
 
     /// <summary>
+    /// True when this segment holds only the start of a ClientHello whose TLS
+    /// record continues in the next TCP segment. Modern ClientHellos (~1.8 KB with
+    /// post-quantum key shares) don't fit in one segment, and since Chromium
+    /// shuffles extension order the SNI may be in the part not seen here - in which
+    /// case <see cref="ExtractSni"/> returns null and the connection can't be
+    /// recognized as Discord.
+    /// </summary>
+    public static bool IsPartialClientHello(ReadOnlySpan<byte> tlsPayload) =>
+        IsClientHello(tlsPayload) &&
+        5 + BinaryPrimitives.ReadUInt16BigEndian(tlsPayload[3..]) > tlsPayload.Length;
+
+    /// <summary>
     /// Extracts SNI (Server Name Indication) from TLS ClientHello
     /// </summary>
     public static string? ExtractSni(ReadOnlySpan<byte> tlsPayload)

@@ -7,6 +7,32 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.3.0] - 2026-11-06
+
+### Fixed
+
+- **Failure detection still never fired in practice.** The v1.1.0 fix waited for an inbound RST, but the capture filter only matched outbound packets, so no inbound packet ever reached it and techniques never rotated. Success and failure are now judged from captured packets only (`HandshakeTracker`): client data beyond the end of the ClientHello means the server answered (success); an inbound RST from port 443 or 6 seconds without progress (silent drop) means failure. The filter now also captures inbound RSTs from port 443.
+- **A failure was credited to the next technique.** The engine switched techniques before recording the failure, so the profile blamed the wrong one. Failures are now saved before switching, and every success is saved too.
+- **Calibration restarted on every launch.** The profile's success rate mixed in results from other techniques, so a working technique could look unreliable and get recalibrated. The rate now counts only the profile's own technique. Concurrent profile writes could also race and corrupt `profile.json`; they are now serialized, and an IO error no longer crashes the session.
+- **Fake TTL sent a decoy with TTL 1 and a truncated payload.** TTL 1 usually dies at the home router, before it reaches the ISP's DPI. The decoy is now a full 517-byte ClientHello with TTL 5 (the value GoodbyeDPI-Turkey uses), it works over IPv6 as well, and the real packet is sent unchanged without an artificial delay. A saved TTL below 2 is used as 5.
+- **TCP fragmentation from a saved profile cut the whole ClientHello into 2-byte segments.** `FragmentFirstBytes` was ignored, so a ~1.8 KB post-quantum ClientHello became ~900 packets. It now splits only the first 50 bytes (the TLS record and handshake headers) into 2-byte segments and sends the rest in one, the same as the first-run default; a saved value of 0 means 50.
+- **"Combined" did nothing extra.** It ran plain fragmentation. It is removed from the rotation; saved profiles that use it fall back to TCP fragmentation.
+- **DNS settings changed only IPv4.** Windows kept asking the router's IPv6 DNS, which on some ISPs returns the block page. Applying Cloudflare/Google now sets IPv4 and IPv6, turns on encrypted DNS (DoH) on Windows 11 and warns that Windows 10 has none, then runs a real lookup with the new settings and offers a one-key revert to DHCP if it fails. The screen shows the DNS servers Windows actually uses, IPv4 and IPv6 separately, and warns about the Windows 11 "DNS settings for all Wi-Fi networks" override. Reverting to DHCP resets both families.
+- **Sub-screens scrolled off a default 30-row console.** The 6-line banner is now shown only on the home, start and tray screens; sub-screens use a one-line header.
+
+### Added
+
+- **DNS protection (DoH).** While ZeroDivert runs, every app's plain DNS queries (UDP 53, IPv4 and IPv6) are answered over DNS-over-HTTPS through `https://1.1.1.1/dns-query` (RFC 8484, HTTP/2), and the answer is injected as if it came from the queried server. Windows' DNS settings are not changed. If DoH can't be reached, the query is sent on unchanged. On by default; it can be turned off in **Ayarlar → DNS koruması (DoH)**. The status panel shows how many queries went over DoH and how many fell back. Ported from Limbo 1.2.0.
+- **"GoodbyeDPI uyumlu" technique**, written from GoodbyeDPI's source to match GoodbyeDPI-Turkey's `-5 --set-ttl 5`: a 517-byte decoy ClientHello (GoodbyeDPI's own bytes, Apache-2.0, see `THIRD-PARTY-NOTICES.txt`) with TTL 5, then the real ClientHello split after its first 2 bytes and sent in reverse order. Unlike GoodbyeDPI it is applied to Discord connections only. It is last in the automatic rotation until comparative tests on more lines say otherwise.
+- **Pick a technique by hand** in **Ayarlar → Bypass tekniği**. A pinned technique is never rotated and doesn't overwrite the saved profile.
+- **Tests and CI.** New xUnit project `tests/ZeroDivert.Tests` (46 tests: handshake tracking, DNS parsing and interception, capture filter compilation, the bypass strategies, the adaptive engine). They need neither admin rights nor the driver. `.github/workflows/build.yml` builds and tests every push and pull request; the release workflow runs the tests before publishing.
+- With `-v`, the log counts ClientHellos whose SNI isn't in the first TCP segment (large post-quantum ClientHellos are split across segments), so such cases are visible.
+
+### Removed
+
+- **UDP handling.** ZeroDivert no longer captures or modifies UDP traffic (the "UDP Fake" technique and the Discord voice port and IP range filters). Voice and video connections are left alone; DNS queries are the only UDP packets it captures, and only while DNS protection is on.
+- Unused code: the old `ZeroDivertEngine`, `TcpFragmentationStrategy`, `DpiBypassEngine.CreateDefault` and unused profile fields.
+
 ## [1.2.0] - 2026-10-19
 
 ### Added
